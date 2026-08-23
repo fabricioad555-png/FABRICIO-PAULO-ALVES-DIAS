@@ -1,0 +1,17 @@
+{
+  "short_name": "Crypto Scanner",
+  "name": "Terminal Crypto & Times & Trades IA",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "display": "standalone",
+  "orientation": "portrait"
+}

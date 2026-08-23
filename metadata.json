@@ -1,0 +1,6 @@
+{
+  "name": "CryptoForum Sentiment",
+  "description": "Analisador de sentimento em fóruns de corretoras e comunidades para filtrar informações, identificar criptomoedas mais mencionadas e prever movimentações de mercado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

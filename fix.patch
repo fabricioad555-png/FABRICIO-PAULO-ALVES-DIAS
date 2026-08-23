@@ -1,0 +1,45 @@
+--- src/components/TradingExecutionDashboard.tsx
++++ src/components/TradingExecutionDashboard.tsx
+@@ -29,9 +29,9 @@
+   // Tick Loop for Trailing Stop & PnL Updates
+   useEffect(() => {
+     const interval = setInterval(() => {
+-      const currentAcc = stateRef.current.account;
+-      const currentPos = stateRef.current.positions;
+       const currentCryptos = stateRef.current.cryptos;
++      const currentAcc = getTradingAccount();
++      const currentPos = getPositions();
+       
+       const res = updateActivePositions(
+         currentCryptos, 
+@@ -52,9 +52,9 @@
+   // Listen to AI Signals for Auto-Trading Entries
+   useEffect(() => {
+     const unsubscribe = tradingSignalBus.subscribe((signal) => {
+-      const currentAcc = stateRef.current.account;
+-      const currentPos = stateRef.current.positions;
+       const currentCryptos = stateRef.current.cryptos;
++      const currentAcc = getTradingAccount();
++      const currentPos = getPositions();
+ 
+       if (currentAcc.isAutoTradingEnabled) {
+         const cryptoData = currentCryptos.find(c => c.symbol === signal.symbol);
+@@ -77,15 +77,14 @@
+   // Background HFT Scanner for all active cryptos (Runs when Auto-Trader is ON)
+   useEffect(() => {
+     const interval = setInterval(() => {
+-      const currentAcc = stateRef.current.account;
+-      const currentPos = stateRef.current.positions;
++      const currentAcc = getTradingAccount();
++      const currentPos = getPositions();
+       const currentCryptos = stateRef.current.cryptos;
+ 
+       if (!currentAcc.isAutoTradingEnabled) return;
+ 
+       let anyChanged = false;
+-      let tempAcc = { ...currentAcc };
+-      let tempPos = [...currentPos];
++      let tempAcc = currentAcc;
++      let tempPos = currentPos;
+ 
+       const openPosCount = tempPos.filter(p => p.status === 'OPEN').length;
