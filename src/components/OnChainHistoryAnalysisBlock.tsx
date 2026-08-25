@@ -111,7 +111,7 @@ export const OnChainHistoryAnalysisBlock: React.FC<OnChainHistoryAnalysisBlockPr
   const [copiedAiSummary, setCopiedAiSummary] = useState<boolean>(false);
 
   // Selected crypto object linked directly to the unified crypto selection
-  const selectedCrypto = useMemo(() => {
+  const selectedCrypto: CryptoMention = useMemo(() => {
     const found = cryptos.find((c) => c.symbol.toUpperCase() === activeSymbol.toUpperCase());
     return found || cryptos[0] || {
       id: 'sol',
@@ -130,6 +130,8 @@ export const OnChainHistoryAnalysisBlock: React.FC<OnChainHistoryAnalysisBlockPr
       predictedDirection: 'UP',
       predictedChangeRange: '+5% a +12%',
       predictionConfidence: 91,
+      keyCatalyst: 'Crescimento de Atividade e Adoção On-Chain',
+      sparklineData: [200, 205, 210, 214.50],
     };
   }, [cryptos, activeSymbol]);
 

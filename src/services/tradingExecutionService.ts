@@ -6,20 +6,31 @@ import {
   AssetSelectionMode, 
   ExecuteHftOrderParams,
   MarketReversalPolicy,
-  BtcMarketDirectionResult
+  BtcMarketDirectionResult,
+  ArmedOrderTrigger,
+  OrderTriggerMode
 } from '../types/tradingTypes';
 import { HighFrequencyConfluenceResult } from '../types/hftConfluenceTypes';
 import { CryptoMention } from '../types';
 import { generateLiveOrderFlowData } from './orderFlowDataService';
 import { generateLocalHFTConfluenceAnalysis } from './hftConfluenceService';
+import { analyzeTimesAndTradesTapeAi } from './hftFlowAnalysisService';
 
 const STORAGE_KEY_POSITIONS = 'hft_demo_positions';
 const STORAGE_KEY_ACCOUNT = 'hft_demo_account';
+const STORAGE_KEY_ARMED_TRIGGERS = 'hft_armed_order_triggers';
 export const TRADING_ACCOUNT_EVENT = 'hft_demo_account_updated';
+export const ARMED_TRIGGERS_EVENT = 'hft_armed_triggers_updated';
 
 export function notifyTradingAccountUpdate(account: TradingAccount) {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(TRADING_ACCOUNT_EVENT, { detail: account }));
+  }
+}
+
+export function notifyArmedTriggersUpdate(triggers: ArmedOrderTrigger[]) {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(ARMED_TRIGGERS_EVENT, { detail: triggers }));
   }
 }
 
@@ -69,7 +80,12 @@ export function computeBtcMasterWeightedDirection(
     layer1And2Score * (weightLayer1And2 / 100) + technicalScore * (weightTechnical / 100)
   );
 
-  const side: PositionSide = masterWeightedScore >= 50 ? 'LONG' : 'SHORT';
+  let side: PositionSide = masterWeightedScore >= 50 ? 'LONG' : 'SHORT';
+  const account = getTradingAccount();
+  if (account.isInvertedExecutionEnabled !== false) {
+    side = side === 'LONG' ? 'SHORT' : 'LONG';
+  }
+
   let statusLabel: 'COMPRA FORTE' | 'COMPRA' | 'NEUTRO' | 'VENDA' | 'VENDA FORTE' = 'COMPRA';
   if (masterWeightedScore >= 75) statusLabel = 'COMPRA FORTE';
   else if (masterWeightedScore >= 55) statusLabel = 'COMPRA';
@@ -91,6 +107,10 @@ export function computeBtcMasterWeightedDirection(
   };
 }
 
+export function invertSide(side: PositionSide): PositionSide {
+  return side === 'LONG' ? 'SHORT' : 'LONG';
+}
+
 // Default Account with sanity checks
 export function getTradingAccount(): TradingAccount {
   const defaultAcc: TradingAccount = {
@@ -99,13 +119,16 @@ export function getTradingAccount(): TradingAccount {
     totalRealizedPnlUsd: 0,
     isAutoTradingEnabled: false,
     maxRiskPerTradePct: 2,
-    targetProfitUsd: 0.10,
+    targetProfitUsd: 0.02,
     isQuickProfitExitEnabled: true,
-    maxOperationTimeMinutes: 5,
-    timeDecayProfitTargetUsd: 0.03,
+    maxOperationTimeMinutes: 1.5,
+    timeDecayProfitTargetUsd: 0.00,
     isTimeManagementEnabled: true,
     trailingStepUsd: 0.03,
     isDynamicTrailingStopEnabled: true,
+    isInvertedExecutionEnabled: true,
+    isAiDivergenceExitEnabled: true,
+    reentryCooldownSeconds: 20,
     marketReversalPolicy: 'AUTO_CLOSE',
     isMarketReversalGuardEnabled: true,
     customWeightLayer1And2: 14,
@@ -136,13 +159,17 @@ export function getTradingAccount(): TradingAccount {
       totalRealizedPnlUsd: typeof parsed.totalRealizedPnlUsd === 'number' && !isNaN(parsed.totalRealizedPnlUsd) ? parsed.totalRealizedPnlUsd : 0,
       isAutoTradingEnabled: Boolean(parsed.isAutoTradingEnabled),
       maxRiskPerTradePct: typeof parsed.maxRiskPerTradePct === 'number' ? parsed.maxRiskPerTradePct : 2,
-      targetProfitUsd: typeof parsed.targetProfitUsd === 'number' && parsed.targetProfitUsd > 0 ? parsed.targetProfitUsd : 0.10,
+      targetProfitUsd: typeof parsed.targetProfitUsd === 'number' && parsed.targetProfitUsd > 0 ? parsed.targetProfitUsd : 0.02,
       isQuickProfitExitEnabled: parsed.isQuickProfitExitEnabled !== false,
-      maxOperationTimeMinutes: typeof parsed.maxOperationTimeMinutes === 'number' && parsed.maxOperationTimeMinutes > 0 ? parsed.maxOperationTimeMinutes : 5,
-      timeDecayProfitTargetUsd: typeof parsed.timeDecayProfitTargetUsd === 'number' && parsed.timeDecayProfitTargetUsd > 0 ? parsed.timeDecayProfitTargetUsd : 0.03,
-      isTimeManagementEnabled: parsed.isTimeManagementEnabled !== false,
+      maxOperationTimeMinutes: typeof parsed.maxOperationTimeMinutes === 'number' && parsed.maxOperationTimeMinutes > 0 ? parsed.maxOperationTimeMinutes : 1.5,
+      timeDecayProfitTargetUsd: typeof parsed.timeDecayProfitTargetUsd === 'number' && parsed.timeDecayProfitTargetUsd >= 0 ? parsed.timeDecayProfitTargetUsd : 0.00,
+      isTimeManagementEnabled: parsed.isTimeManagementEnabled === false || (parsed as any).isTimeManagementEnabled === 'false' ? false : true,
       trailingStepUsd: typeof parsed.trailingStepUsd === 'number' && parsed.trailingStepUsd > 0 ? parsed.trailingStepUsd : 0.03,
       isDynamicTrailingStopEnabled: parsed.isDynamicTrailingStopEnabled !== false,
+      isInvertedExecutionEnabled: parsed.isInvertedExecutionEnabled !== false,
+      isAiDivergenceExitEnabled: parsed.isAiDivergenceExitEnabled !== false,
+      reentryCooldownSeconds: typeof parsed.reentryCooldownSeconds === 'number' && parsed.reentryCooldownSeconds >= 0 ? parsed.reentryCooldownSeconds : 5,
+      isAggressionTriggerEnabled: Boolean(parsed.isAggressionTriggerEnabled),
       marketReversalPolicy: (parsed.marketReversalPolicy || 'AUTO_CLOSE') as MarketReversalPolicy,
       isMarketReversalGuardEnabled: parsed.isMarketReversalGuardEnabled !== false,
       customWeightLayer1And2: typeof parsed.customWeightLayer1And2 === 'number' ? parsed.customWeightLayer1And2 : 14,
@@ -195,19 +222,19 @@ export function updateTargetProfit(targetProfitUsd: number, isEnabled: boolean =
   const current = getTradingAccount();
   const updated: TradingAccount = {
     ...current,
-    targetProfitUsd: Math.max(0.01, Number(targetProfitUsd) || 0.10),
+    targetProfitUsd: Math.max(0.01, Number(targetProfitUsd) || 0.02),
     isQuickProfitExitEnabled: isEnabled
   };
   saveTradingAccount(updated);
   return updated;
 }
 
-export function updateTimeManagementSettings(maxMinutes: number, targetProfitUsd: number = 0.03, isEnabled: boolean = true): TradingAccount {
+export function updateTimeManagementSettings(maxMinutes: number, targetProfitUsd: number = 0.00, isEnabled: boolean = true): TradingAccount {
   const current = getTradingAccount();
   const updated: TradingAccount = {
     ...current,
-    maxOperationTimeMinutes: Math.max(1, Number(maxMinutes) || 5),
-    timeDecayProfitTargetUsd: Math.max(0.01, Number(targetProfitUsd) || 0.03),
+    maxOperationTimeMinutes: Math.max(0.5, Number(maxMinutes) || 1.5),
+    timeDecayProfitTargetUsd: Math.max(0, Number(targetProfitUsd) || 0.00),
     isTimeManagementEnabled: isEnabled
   };
   saveTradingAccount(updated);
@@ -235,12 +262,406 @@ export function updateMaxRiskPct(maxRiskPct: number): TradingAccount {
   return updated;
 }
 
-export function getPositions(): TradePosition[] {
-  const saved = localStorage.getItem(STORAGE_KEY_POSITIONS);
+export function updateInvertedExecutionSettings(isEnabled: boolean = true): TradingAccount {
+  const current = getTradingAccount();
+  const updated: TradingAccount = {
+    ...current,
+    isInvertedExecutionEnabled: isEnabled
+  };
+  saveTradingAccount(updated);
+  return updated;
+}
+
+export function updateAiDivergenceSettings(isEnabled: boolean = true): TradingAccount {
+  const current = getTradingAccount();
+  const updated: TradingAccount = {
+    ...current,
+    isAiDivergenceExitEnabled: isEnabled
+  };
+  saveTradingAccount(updated);
+  return updated;
+}
+
+export function updateReentryCooldownSettings(cooldownSeconds: number = 20): TradingAccount {
+  const current = getTradingAccount();
+  const updated: TradingAccount = {
+    ...current,
+    reentryCooldownSeconds: Math.max(0, Number(cooldownSeconds) || 20)
+  };
+  saveTradingAccount(updated);
+  return updated;
+}
+
+export function updateAggressionTriggerSettings(isEnabled: boolean = true): TradingAccount {
+  const current = getTradingAccount();
+  const updated: TradingAccount = {
+    ...current,
+    isAggressionTriggerEnabled: isEnabled
+  };
+  saveTradingAccount(updated);
+  return updated;
+}
+
+export function getArmedTriggers(): ArmedOrderTrigger[] {
+  if (typeof window === 'undefined') return [];
+  const saved = localStorage.getItem(STORAGE_KEY_ARMED_TRIGGERS);
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) return parsed;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+export function saveArmedTriggers(triggers: ArmedOrderTrigger[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY_ARMED_TRIGGERS, JSON.stringify(triggers));
+    notifyArmedTriggersUpdate(triggers);
+  } catch (err) {
+    console.error('Failed to save armed triggers:', err);
+  }
+}
+
+export function clearArmedTriggers() {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(STORAGE_KEY_ARMED_TRIGGERS);
+  notifyArmedTriggersUpdate([]);
+}
+
+export function armOrderTrigger(params: {
+  symbol: string;
+  coinName?: string;
+  targetSide: PositionSide;
+  sizeUsd?: number;
+  leverage?: number;
+  triggerMode?: OrderTriggerMode;
+  minAggressionVolumeUsd?: number;
+  autoRearmOnClose?: boolean;
+  reason?: string;
+}): { success: boolean; trigger?: ArmedOrderTrigger; log: string } {
+  const triggers = getArmedTriggers();
+  const openPositions = getPositions().filter(p => p.status === 'OPEN');
+
+  // Check if position already open for symbol
+  if (openPositions.some(p => p.symbol === params.symbol)) {
+    return {
+      success: false,
+      log: `Já existe uma posição aberta para ${params.symbol}. Feche-a antes de armar novo gatilho.`
+    };
+  }
+
+  const mode = params.triggerMode || 'INSTANT_AGGRESSION';
+  const minVol = params.minAggressionVolumeUsd || 2500;
+  const isAutoRearm = params.autoRearmOnClose ?? false;
+
+  let conditionText = '';
+  if (mode === 'INSTANT_AGGRESSION') {
+    conditionText = params.targetSide === 'LONG'
+      ? 'Aguardando Comprador Comprar Mais Caro (+US$) no Ask / Varredura de Alta'
+      : 'Aguardando Vendedor Vender Mais Barato (-US$) no Bid / Varredura de Baixa';
+  } else if (mode === 'WHALE_VOLUME') {
+    conditionText = params.targetSide === 'LONG'
+      ? `Aguardando Agressão Compradora de Baleia (≥ $${minVol.toLocaleString()} USD)`
+      : `Aguardando Agressão Vendedora de Baleia (≥ $${minVol.toLocaleString()} USD)`;
+  } else {
+    // CONFLUENCE_DUAL
+    conditionText = params.targetSide === 'LONG'
+      ? 'Aguardando Dupla Confirmação: Agressão no Ask + Confluência Técnica 14%/86% em Compra'
+      : 'Aguardando Dupla Confirmação: Agressão no Bid + Confluência Técnica 14%/86% em Venda';
+  }
+
+  // Check if already armed
+  const existingIndex = triggers.findIndex(t => t.symbol === params.symbol && t.status === 'ARMED');
+  if (existingIndex >= 0) {
+    triggers[existingIndex].targetSide = params.targetSide;
+    triggers[existingIndex].triggerMode = mode;
+    triggers[existingIndex].minAggressionVolumeUsd = minVol;
+    triggers[existingIndex].autoRearmOnClose = isAutoRearm;
+    triggers[existingIndex].sizeUsd = params.sizeUsd || triggers[existingIndex].sizeUsd;
+    triggers[existingIndex].leverage = params.leverage || triggers[existingIndex].leverage;
+    triggers[existingIndex].armedAt = Date.now();
+    triggers[existingIndex].requiredCondition = conditionText;
+    triggers[existingIndex].triggerLogs.push(`Gatilho reconfigurado para ${params.targetSide} [Modo: ${mode}] às ${new Date().toLocaleTimeString()}.`);
+    saveArmedTriggers(triggers);
+    return {
+      success: true,
+      trigger: triggers[existingIndex],
+      log: `⚡ Gatilho de Agressão REARMADO para ${params.symbol} (${params.targetSide}) em modo ${mode}. Monitorando fluxo em tempo real!`
+    };
+  }
+
+  const newTrigger: ArmedOrderTrigger = {
+    id: `trigger_${Date.now()}_${params.symbol}`,
+    symbol: params.symbol,
+    coinName: params.coinName || params.symbol,
+    targetSide: params.targetSide,
+    sizeUsd: params.sizeUsd || 100,
+    leverage: params.leverage || 5,
+    armedAt: Date.now(),
+    status: 'ARMED',
+    triggerMode: mode,
+    minAggressionVolumeUsd: minVol,
+    autoRearmOnClose: isAutoRearm,
+    reason: params.reason || `Gatilho de Emissão Inteligente por Agressão na Fita (${mode})`,
+    requiredCondition: conditionText,
+    lastTapeCheckTime: Date.now(),
+    currentAggressionStatus: 'Aguardando Análise da Fita...',
+    buyAggressionPct: 50,
+    sellAggressionPct: 50,
+    aggressionVolumeDetectedUsd: 0,
+    triggerLogs: [
+      `⚡ Gatilho Armado com Sucesso às ${new Date().toLocaleTimeString()} [Modo: ${mode}]. Monitorando Time & Trades segundo a segundo para liberar ordem de ${params.targetSide}.`
+    ]
+  };
+
+  triggers.unshift(newTrigger);
+  saveArmedTriggers(triggers);
+
+  return {
+    success: true,
+    trigger: newTrigger,
+    log: `⚡ Gatilho de Emissão Armado para ${params.symbol} (${params.targetSide}) [Modo: ${mode}]! A ordem será liberada no milissegundo em que as condições forem validadas.`
+  };
+}
+
+export function cancelArmedTrigger(triggerId: string): { success: boolean; log: string } {
+  const triggers = getArmedTriggers();
+  const trigger = triggers.find(t => t.id === triggerId);
+  if (trigger) {
+    trigger.status = 'CANCELLED';
+    trigger.triggerLogs.push(`Gatilho cancelado pelo usuário às ${new Date().toLocaleTimeString()}.`);
+    saveArmedTriggers(triggers);
+    return { success: true, log: `Gatilho de ${trigger.symbol} cancelado com sucesso.` };
+  }
+  return { success: false, log: 'Gatilho não encontrado.' };
+}
+
+export function forceExecuteArmedTriggerImmediately(
+  triggerId: string,
+  cryptos: CryptoMention[]
+): { success: boolean; log: string; position?: TradePosition } {
+  const triggers = getArmedTriggers();
+  const trigger = triggers.find(t => t.id === triggerId);
+  if (!trigger || trigger.status !== 'ARMED') {
+    return { success: false, log: 'Gatilho não está em estado armado para execução forçada.' };
+  }
+
+  const cryptoObj = cryptos.find(c => c.symbol === trigger.symbol) || ({
+    symbol: trigger.symbol,
+    name: trigger.coinName || trigger.symbol,
+    priceUsd: 100,
+    change24h: 0
+  } as any);
+
+  const flow = generateLiveOrderFlowData(cryptoObj);
+  const signal = generateLocalHFTConfluenceAnalysis(cryptoObj, flow);
+  const currentAcc = getTradingAccount();
+  const currentPositions = getPositions();
+
+  const res = executeDirectTradeForCrypto(cryptoObj, trigger.targetSide, signal, currentAcc, currentPositions);
+  if (res.tradeOpened && res.positions[0]) {
+    trigger.status = 'TRIGGERED';
+    trigger.executedPositionId = res.positions[0].id;
+    trigger.executedPrice = res.positions[0].entryPrice;
+    trigger.executedAt = Date.now();
+    trigger.triggerLogs.push(`⚡ Execução Imediata Forçada pelo Trader em US$ ${res.positions[0].entryPrice} às ${new Date().toLocaleTimeString()}.`);
+    saveArmedTriggers(triggers);
+    return {
+      success: true,
+      log: `⚡ Disparo Imediato Executado: Posição ${trigger.targetSide} aberta em ${trigger.symbol} a US$ ${res.positions[0].entryPrice}!`,
+      position: res.positions[0]
+    };
+  }
+
+  return { success: false, log: res.log };
+}
+
+export function armAllTop3ParetoTriggers(
+  cryptos: CryptoMention[],
+  top3Candidates: Array<{ symbol: string; name: string; recommendedAction: string }>,
+  sizeUsd: number = 100,
+  leverage: number = 5,
+  triggerMode: OrderTriggerMode = 'INSTANT_AGGRESSION'
+): { countArmed: number; logs: string[] } {
+  let count = 0;
+  const logs: string[] = [];
+
+  for (const item of top3Candidates) {
+    const isLong = item.recommendedAction.includes('COMPRA') || item.recommendedAction.includes('LONG');
+    const side: PositionSide = isLong ? 'LONG' : 'SHORT';
+    const res = armOrderTrigger({
+      symbol: item.symbol,
+      coinName: item.name,
+      targetSide: side,
+      sizeUsd,
+      leverage,
+      triggerMode,
+      reason: `Gatilho Rápido em Lote Top 3 Pareto`
+    });
+    if (res.success) {
+      count++;
+      logs.push(res.log);
+    }
+  }
+
+  return { countArmed: count, logs };
+}
+
+export function evaluateAndExecuteArmedTriggers(
+  cryptos: CryptoMention[]
+): { executedTriggers: ArmedOrderTrigger[]; logs: string[] } {
+  const triggers = getArmedTriggers();
+  const armedList = triggers.filter(t => t.status === 'ARMED');
+  if (armedList.length === 0) return { executedTriggers: [], logs: [] };
+
+  const account = getTradingAccount();
+  const positions = getPositions();
+  const openPositions = positions.filter(p => p.status === 'OPEN');
+
+  const executedTriggers: ArmedOrderTrigger[] = [];
+  const logs: string[] = [];
+  let triggersUpdated = false;
+
+  for (const trigger of armedList) {
+    if (openPositions.length >= MAX_CONCURRENT_POSITIONS) {
+      trigger.currentAggressionStatus = 'Em espera (Máximo de 3 posições simultâneas atingido)';
+      triggersUpdated = true;
+      continue;
+    }
+
+    if (openPositions.some(p => p.symbol === trigger.symbol)) {
+      trigger.status = 'CANCELLED';
+      trigger.triggerLogs.push(`Posição já aberta para ${trigger.symbol}. Gatilho desarmado.`);
+      triggersUpdated = true;
+      continue;
+    }
+
+    const remainingCooldown = getSymbolCooldownRemainingSeconds(trigger.symbol, positions, account.reentryCooldownSeconds);
+    if (remainingCooldown > 0) {
+      trigger.currentAggressionStatus = `Aguardando Cooldown Pós-Fechamento (${remainingCooldown}s)`;
+      triggersUpdated = true;
+      continue;
+    }
+
+    const cryptoObj = cryptos.find(c => c.symbol === trigger.symbol) || ({
+      symbol: trigger.symbol,
+      name: trigger.coinName || trigger.symbol,
+      priceUsd: 100,
+      change24h: 0
+    } as any);
+
+    const flowData = generateLiveOrderFlowData(cryptoObj);
+    const tapeAiResult = analyzeTimesAndTradesTapeAi(trigger.symbol, cryptoObj.priceUsd, flowData.timesAndTrades);
+    trigger.lastTapeCheckTime = Date.now();
+    trigger.buyAggressionPct = tapeAiResult.buyAggressionPct;
+    trigger.sellAggressionPct = tapeAiResult.sellAggressionPct;
+
+    const isLong = trigger.targetSide === 'LONG';
+    const isTapeAllowed = isLong 
+      ? tapeAiResult.executionGate.isLongAllowed 
+      : tapeAiResult.executionGate.isShortAllowed;
+
+    const detectedVolume = isLong 
+      ? tapeAiResult.buyerEscalation.totalVolumeUsd 
+      : tapeAiResult.sellerEscalation.totalVolumeUsd;
+    trigger.aggressionVolumeDetectedUsd = detectedVolume;
+
+    // Check Trigger Mode Specific Logic
+    const mode = trigger.triggerMode || 'INSTANT_AGGRESSION';
+    let isTriggerReadyToFire = false;
+    let modeDiag = '';
+
+    if (mode === 'INSTANT_AGGRESSION') {
+      isTriggerReadyToFire = isTapeAllowed;
+      modeDiag = isTapeAllowed ? 'Agressão Instantânea Validada' : (isLong ? tapeAiResult.executionGate.reasonLong : tapeAiResult.executionGate.reasonShort);
+    } else if (mode === 'WHALE_VOLUME') {
+      const minVol = trigger.minAggressionVolumeUsd || 2500;
+      const hasVolume = detectedVolume >= minVol || (isLong ? tapeAiResult.buyAggressionPct >= 70 : tapeAiResult.sellAggressionPct >= 70);
+      isTriggerReadyToFire = isTapeAllowed && hasVolume;
+      modeDiag = isTriggerReadyToFire 
+        ? `Agressão Baleia Confirmada ($${Math.round(detectedVolume).toLocaleString()} USD)` 
+        : `Aguardando Volume (Atual: $${Math.round(detectedVolume).toLocaleString()} / Alvo: $${minVol.toLocaleString()})`;
+    } else if (mode === 'CONFLUENCE_DUAL') {
+      const localSignal = generateLocalHFTConfluenceAnalysis(cryptoObj, flowData);
+      const isConfluenceAgreeing = (isLong && (localSignal.finalSignal.includes('COMPRA') || localSignal.confluenceScorePct >= 50))
+        || (!isLong && (localSignal.finalSignal.includes('VENDA') || localSignal.confluenceScorePct >= 50));
+      
+      isTriggerReadyToFire = isTapeAllowed && isConfluenceAgreeing;
+      modeDiag = isTriggerReadyToFire
+        ? `Dupla Confirmação OK (Fita + Confluência ${localSignal.confluenceScorePct}%)`
+        : `Aguardando Alinhamento Duplo (Confluência: ${localSignal.confluenceScorePct}% ${localSignal.finalSignal})`;
+    }
+
+    if (isLong) {
+      trigger.currentAggressionStatus = tapeAiResult.buyerEscalation.isActive
+        ? `🟢 Comprador Pagando Mais Caro (+${tapeAiResult.buyerEscalation.priceDifferencePct.toFixed(2)}%) | ${modeDiag}`
+        : (isTapeAllowed ? `🟢 Pressão Compradora (${tapeAiResult.buyAggressionPct}%) | ${modeDiag}` : `⛔ ${tapeAiResult.executionGate.reasonLong}`);
+    } else {
+      trigger.currentAggressionStatus = tapeAiResult.sellerEscalation.isActive
+        ? `🔴 Vendedor Batendo Mais Barato (-${tapeAiResult.sellerEscalation.priceDifferencePct.toFixed(2)}%) | ${modeDiag}`
+        : (isTapeAllowed ? `🔴 Pressão Vendedora (${tapeAiResult.sellAggressionPct}%) | ${modeDiag}` : `⛔ ${tapeAiResult.executionGate.reasonShort}`);
+    }
+
+    if (isTriggerReadyToFire) {
+      trigger.status = 'TRIGGERED';
+      trigger.executedAt = Date.now();
+      const fireLog = isLong
+        ? `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de COMPRA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}] Agressão compradora no Time & Trades a favor (${tapeAiResult.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro no Ask' : 'Pressão Compradora ' + tapeAiResult.buyAggressionPct + '%'}).`
+        : `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de VENDA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}] Agressão vendedora no Time & Trades a favor (${tapeAiResult.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato no Bid' : 'Pressão Vendedora ' + tapeAiResult.sellAggressionPct + '%'}).`;
+      
+      trigger.triggerLogs.push(fireLog);
+      logs.push(fireLog);
+      executedTriggers.push(trigger);
+      triggersUpdated = true;
+
+      const flow = generateLiveOrderFlowData(cryptoObj);
+      const signal = generateLocalHFTConfluenceAnalysis(cryptoObj, flow);
+      const currentAcc = getTradingAccount();
+      const currentPositions = getPositions();
+      const res = executeDirectTradeForCrypto(cryptoObj, trigger.targetSide, signal, currentAcc, currentPositions);
+      if (res.tradeOpened && res.positions[0]) {
+        trigger.executedPositionId = res.positions[0].id;
+        trigger.executedPrice = res.positions[0].entryPrice;
+      }
+    } else {
+      triggersUpdated = true;
+    }
+  }
+
+  if (triggersUpdated) {
+    saveArmedTriggers(triggers);
+  }
+
+  return { executedTriggers, logs };
+}
+
+export function getPositions(): TradePosition[] {
+  if (typeof window === 'undefined') return [];
+  const saved = localStorage.getItem(STORAGE_KEY_POSITIONS);
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.map((p: any) => ({
+          ...p,
+          sizeUsd: typeof p.sizeUsd === 'number' && !isNaN(p.sizeUsd) ? p.sizeUsd : 100,
+          leverage: typeof p.leverage === 'number' && !isNaN(p.leverage) ? p.leverage : 5,
+          entryPrice: typeof p.entryPrice === 'number' && !isNaN(p.entryPrice) ? p.entryPrice : 0,
+          currentPrice: typeof p.currentPrice === 'number' && !isNaN(p.currentPrice) ? p.currentPrice : (p.entryPrice || 0),
+          unrealizedPnlUsd: typeof p.unrealizedPnlUsd === 'number' && !isNaN(p.unrealizedPnlUsd) ? p.unrealizedPnlUsd : 0,
+          unrealizedPnlPct: typeof p.unrealizedPnlPct === 'number' && !isNaN(p.unrealizedPnlPct) ? p.unrealizedPnlPct : 0,
+          realizedPnlUsd: typeof p.realizedPnlUsd === 'number' && !isNaN(p.realizedPnlUsd) ? p.realizedPnlUsd : 0,
+          highestUnrealizedPnlUsd: typeof p.highestUnrealizedPnlUsd === 'number' && !isNaN(p.highestUnrealizedPnlUsd) ? p.highestUnrealizedPnlUsd : 0,
+          trailingLockedProfitUsd: typeof p.trailingLockedProfitUsd === 'number' && !isNaN(p.trailingLockedProfitUsd) ? p.trailingLockedProfitUsd : 0,
+          targetProfitUsd: typeof p.targetProfitUsd === 'number' && !isNaN(p.targetProfitUsd) ? p.targetProfitUsd : 0.02,
+          currentStopLoss: typeof p.currentStopLoss === 'number' && !isNaN(p.currentStopLoss) ? p.currentStopLoss : (p.entryPrice || 0),
+          trailingStepsCount: typeof p.trailingStepsCount === 'number' && !isNaN(p.trailingStepsCount) ? p.trailingStepsCount : 0,
+        }));
+      }
     } catch {
       return [];
     }
@@ -262,6 +683,39 @@ export function clearTradingHistory() {
 
 // Risk Management Constants
 const MAX_CONCURRENT_POSITIONS = 3;
+export const DEFAULT_REENTRY_COOLDOWN_SECONDS = 20;
+
+/**
+ * Calculates remaining seconds of cooldown for a crypto symbol after a position has finalized/closed.
+ * Rule: Never execute a new order for a crypto symbol that just finalized until the cooldown period has elapsed.
+ * Available options: 00:20 (20s), 00:01:00 (60s), 00:03:00 (180s), 00:05:00 (300s), 00:10:00 (600s).
+ */
+export function getSymbolCooldownRemainingSeconds(
+  symbol: string, 
+  positions?: TradePosition[], 
+  configuredCooldownSeconds?: number
+): number {
+  const allPositions = positions || getPositions();
+  const cooldownSec = typeof configuredCooldownSeconds === 'number' && configuredCooldownSeconds >= 0
+    ? configuredCooldownSeconds
+    : (getTradingAccount().reentryCooldownSeconds ?? DEFAULT_REENTRY_COOLDOWN_SECONDS);
+
+  if (cooldownSec <= 0) return 0;
+
+  const closedForSymbol = allPositions.filter(
+    p => p.symbol === symbol && p.status === 'CLOSED' && typeof p.closeTime === 'number' && p.closeTime > 0
+  );
+  if (closedForSymbol.length === 0) return 0;
+
+  const lastCloseTime = Math.max(...closedForSymbol.map(p => p.closeTime || 0));
+  if (!lastCloseTime) return 0;
+
+  const elapsedSec = (Date.now() - lastCloseTime) / 1000;
+  if (elapsedSec < cooldownSec) {
+    return Math.ceil(cooldownSec - elapsedSec);
+  }
+  return 0;
+}
 
 export interface PositionStrategyOptions {
   isQuickProfitExitEnabled?: boolean;
@@ -293,21 +747,24 @@ export function resolvePositionStrategies(
     : (account.isQuickProfitExitEnabled !== false);
   const targetProfitUsd = typeof overrides?.targetProfitUsd === 'number' && overrides.targetProfitUsd > 0
     ? overrides.targetProfitUsd
-    : (typeof account.targetProfitUsd === 'number' && account.targetProfitUsd > 0 ? account.targetProfitUsd : 0.10);
+    : (typeof account.targetProfitUsd === 'number' && account.targetProfitUsd > 0 ? account.targetProfitUsd : 0.02);
 
+  const accountTimeMgmt = account.isTimeManagementEnabled !== false;
   const isTimeMgmt = overrides?.isTimeManagementEnabled !== undefined
-    ? overrides.isTimeManagementEnabled
-    : (account.isTimeManagementEnabled !== false);
+    ? (overrides.isTimeManagementEnabled && accountTimeMgmt)
+    : accountTimeMgmt;
   const maxMinutes = typeof overrides?.maxOperationTimeMinutes === 'number' && overrides.maxOperationTimeMinutes > 0
     ? overrides.maxOperationTimeMinutes
-    : (typeof account.maxOperationTimeMinutes === 'number' && account.maxOperationTimeMinutes > 0 ? account.maxOperationTimeMinutes : 5);
-  const timeDecayTargetUsd = typeof overrides?.timeDecayProfitTargetUsd === 'number' && overrides.timeDecayProfitTargetUsd > 0
+    : (typeof account.maxOperationTimeMinutes === 'number' && account.maxOperationTimeMinutes > 0 ? account.maxOperationTimeMinutes : 1.5);
+  const timeDecayTargetUsd = typeof overrides?.timeDecayProfitTargetUsd === 'number' && overrides.timeDecayProfitTargetUsd >= 0
     ? overrides.timeDecayProfitTargetUsd
-    : (typeof account.timeDecayProfitTargetUsd === 'number' && account.timeDecayProfitTargetUsd > 0 ? account.timeDecayProfitTargetUsd : 0.03);
+    : (typeof account.timeDecayProfitTargetUsd === 'number' && account.timeDecayProfitTargetUsd >= 0 ? account.timeDecayProfitTargetUsd : 0.00);
 
   const isDynamicTrailing = overrides?.isDynamicTrailingStopEnabled !== undefined
     ? overrides.isDynamicTrailingStopEnabled
     : (account.isDynamicTrailingStopEnabled !== false);
+
+  const maxMinLabel = maxMinutes === 1.5 ? '1m 30s' : `${maxMinutes} min`;
 
   const strategySummaryLogs: string[] = [
     `📋 Reconhecimento de Estratégias na Emissão:`,
@@ -315,8 +772,8 @@ export function resolvePositionStrategies(
       ? `🎯 [ESTRATÉGIA INSERIDA] Auto Take-Profit Scalper (+10¢): ATIVO (Alvo: +US$ ${targetProfitUsd.toFixed(2)})`
       : `🎯 [ESTRATÉGIA NÃO INSERIDA] Auto Take-Profit Scalper (+10¢): DESATIVADO conforme seleção`,
     isTimeMgmt
-      ? `⏱️ [ESTRATÉGIA INSERIDA] Gerenciamento de Tempo HFT: ATIVO (Máx ${maxMinutes} min | Saída em +US$ ${timeDecayTargetUsd.toFixed(2)} / +3¢)`
-      : `⏱️ [ESTRATÉGIA NÃO INSERIDA] Gerenciamento de Tempo HFT (5 min +3¢): DESATIVADO conforme seleção`,
+      ? `⏱️ [ESTRATÉGIA INSERIDA] Gerenciamento de Tempo HFT: ATIVO (Máx ${maxMinLabel} | Encerramento Imediato após Tempo Máximo)`
+      : `⏱️ [ESTRATÉGIA NÃO INSERIDA] Gerenciamento de Tempo HFT (${maxMinLabel}): DESATIVADO conforme seleção`,
     isDynamicTrailing
       ? `🛡️ [ESTRATÉGIA INSERIDA] Trailing Stop Dinâmico: ATIVO (1º Estágio: 6¢ ➔ +3¢ | 2º Estágio: 30¢ ➔ Rastreamento 15¢ atrás)`
       : `🛡️ [ESTRATÉGIA NÃO INSERIDA] Trailing Stop Dinâmico (6¢ ➔ 3¢ & 30¢ ➔ 15¢): DESATIVADO conforme seleção`
@@ -336,7 +793,7 @@ export function resolvePositionStrategies(
 /**
  * Parses directional intention from any AI confluence signal
  */
-export function determineSignalSide(signal: HighFrequencyConfluenceResult): PositionSide | null {
+export function determineSignalSide(signal: HighFrequencyConfluenceResult, isInverted: boolean = false): PositionSide | null {
   // Read custom decision weights for the customizable decision system
   let weightLayer1And2 = 14;
   let weightTechnical = 86;
@@ -354,46 +811,43 @@ export function determineSignalSide(signal: HighFrequencyConfluenceResult): Posi
     layer1And2Score * (weightLayer1And2 / 100) + technicalScore * (weightTechnical / 100)
   );
 
+  let rawSide: PositionSide | null = null;
+
   // Buy trigger based on the weighted decision system (LONG)
   if (masterWeightedScore >= 56) {
-    return 'LONG';
+    rawSide = 'LONG';
+  } else if (masterWeightedScore <= 48) {
+    // Sell trigger based on the weighted decision system (SHORT)
+    rawSide = 'SHORT';
+  } else {
+    // If no clear threshold is reached, check legacy string patterns as robust fallback
+    const finalSig = (signal.finalSignal || '').toUpperCase();
+    const primarySig = (signal.primaryAnalysis?.primarySignal || '').toUpperCase();
+    const secondarySig = (signal.secondaryValidation?.secondaryConfirmationSignal || '').toUpperCase();
+
+    if (finalSig.includes('AGUARDAR') && !primarySig.includes('COMPRA') && !primarySig.includes('VENDA')) {
+      rawSide = null;
+    } else if (
+      finalSig.includes('COMPRA') || 
+      finalSig.includes('LONG') || 
+      finalSig.includes('BUY') ||
+      primarySig.includes('COMPRA') ||
+      secondarySig.includes('COMPRA')
+    ) {
+      rawSide = 'LONG';
+    } else if (
+      finalSig.includes('VENDA') || 
+      finalSig.includes('SHORT') || 
+      finalSig.includes('SELL') ||
+      primarySig.includes('VENDA') ||
+      secondarySig.includes('VENDA')
+    ) {
+      rawSide = 'SHORT';
+    }
   }
 
-  // Sell trigger based on the weighted decision system (SHORT)
-  if (masterWeightedScore <= 48) {
-    return 'SHORT';
-  }
-
-  // If no clear threshold is reached, check legacy string patterns as robust fallback
-  const finalSig = (signal.finalSignal || '').toUpperCase();
-  const primarySig = (signal.primaryAnalysis?.primarySignal || '').toUpperCase();
-  const secondarySig = (signal.secondaryValidation?.secondaryConfirmationSignal || '').toUpperCase();
-
-  if (finalSig.includes('AGUARDAR') && !primarySig.includes('COMPRA') && !primarySig.includes('VENDA')) {
-    return null;
-  }
-
-  if (
-    finalSig.includes('COMPRA') || 
-    finalSig.includes('LONG') || 
-    finalSig.includes('BUY') ||
-    primarySig.includes('COMPRA') ||
-    secondarySig.includes('COMPRA')
-  ) {
-    return 'LONG';
-  }
-
-  if (
-    finalSig.includes('VENDA') || 
-    finalSig.includes('SHORT') || 
-    finalSig.includes('SELL') ||
-    primarySig.includes('VENDA') ||
-    secondarySig.includes('VENDA')
-  ) {
-    return 'SHORT';
-  }
-
-  return null;
+  if (!rawSide) return null;
+  return isInverted ? (rawSide === 'LONG' ? 'SHORT' : 'LONG') : rawSide;
 }
 
 /**
@@ -412,10 +866,13 @@ export function processConfluenceSignalForTrading(
     return { account, positions, log: 'Auto-Trading desativado.', tradeOpened: false };
   }
 
-  const side = forcedSide || determineSignalSide(signal);
-  if (!side) {
+  const rawSide = forcedSide || determineSignalSide(signal, false);
+  if (!rawSide) {
     return { account, positions, log: `Sinal Neutro/Aguardar para ${signal.symbol}. Nenhuma ação executada.`, tradeOpened: false };
   }
+
+  const isInverted = account.isInvertedExecutionEnabled !== false;
+  const side = isInverted ? (rawSide === 'LONG' ? 'SHORT' : 'LONG') : rawSide;
 
   const openPositions = positions.filter(p => p.status === 'OPEN');
 
@@ -430,12 +887,65 @@ export function processConfluenceSignalForTrading(
     return { account, positions, log: `Já existe uma posição aberta para ${signal.symbol}.`, tradeOpened: false };
   }
 
+  // Rule 2b: Configurable Post-Close Cooldown per symbol (20s, 1m, 3m, 5m, 10m)
+  const remainingCooldown = getSymbolCooldownRemainingSeconds(signal.symbol, positions, account.reentryCooldownSeconds);
+  if (remainingCooldown > 0) {
+    return { account, positions, log: `⏳ Cooldown pós-fechamento ativo para ${signal.symbol}: Liberado para nova ordem em ${remainingCooldown}s (Ordem anterior encerrada recentemente).`, tradeOpened: false };
+  }
+
   // Rule 3: Sniper Precision Score Filter (Adaptive: 55% for 1st order, 58% for 2nd, 62% for 3rd)
   if (!bypassFilters) {
     const currentOpenCount = openPositions.length;
     const requiredScore = currentOpenCount === 0 ? 55 : currentOpenCount === 1 ? 58 : 62;
     if (signal.confluenceScorePct < requiredScore) {
       return { account, positions, log: `Score de Precisão (${signal.confluenceScorePct}%) abaixo do Filtro Sniper mínimo adaptativo (${requiredScore}%) para ${signal.symbol}.`, tradeOpened: false };
+    }
+  }
+
+  // Rule 4: Anti-Trap Filter (Nunca comprar próximo à resistência / Nunca vender próximo ao suporte)
+  const entryPriceCheck = currentPrice > 0 ? currentPrice : (signal.currentPriceUsd || 1);
+  if (!bypassFilters && signal.secondaryValidation?.visualBookAnalysis) {
+    const { askWallPrice, bidWallPrice } = signal.secondaryValidation.visualBookAnalysis;
+    const proximityThreshold = 0.005; // 0.5% proximity warning
+    
+    if (side === 'LONG' && askWallPrice > entryPriceCheck) {
+      const distanceToRes = (askWallPrice - entryPriceCheck) / entryPriceCheck;
+      if (distanceToRes < proximityThreshold) {
+        return { account, positions, log: `Filtro Anti-Armadilha (Sinc. Book): Compra abortada para ${signal.symbol}. Preço atual (US$ ${entryPriceCheck.toFixed(4)}) perigosamente próximo da muralha de venda/resistência (US$ ${askWallPrice.toFixed(4)}).`, tradeOpened: false };
+      }
+    }
+    
+    if (side === 'SHORT' && bidWallPrice > 0 && entryPriceCheck > bidWallPrice) {
+      const distanceToSup = (entryPriceCheck - bidWallPrice) / entryPriceCheck;
+      if (distanceToSup < proximityThreshold) {
+        return { account, positions, log: `Filtro Anti-Armadilha (Sinc. Book): Venda abortada para ${signal.symbol}. Preço atual (US$ ${entryPriceCheck.toFixed(4)}) perigosamente próximo da muralha de compra/suporte (US$ ${bidWallPrice.toFixed(4)}).`, tradeOpened: false };
+      }
+    }
+  }
+
+  // Rule 5: Gatilho de Execução Time & Trades (Liberar SOMENTE se agressão for a favor da ordem executada)
+  let tapeAiResult: any = null;
+  if (!bypassFilters && account.isAggressionTriggerEnabled !== false) {
+    const coinObj = { symbol: signal.symbol, name: signal.coinName || signal.symbol, priceUsd: entryPriceCheck, change24h: 0 } as any;
+    const flowData = generateLiveOrderFlowData(coinObj);
+    tapeAiResult = analyzeTimesAndTradesTapeAi(signal.symbol, entryPriceCheck, flowData.timesAndTrades);
+
+    if (side === 'LONG' && !tapeAiResult.executionGate.isLongAllowed) {
+      return { 
+        account, 
+        positions, 
+        log: `🛡️ Gatilho de Agressão Time&Trades: Compra (${side}) bloqueada para ${signal.symbol}. ${tapeAiResult.executionGate.reasonLong}`, 
+        tradeOpened: false 
+      };
+    }
+
+    if (side === 'SHORT' && !tapeAiResult.executionGate.isShortAllowed) {
+      return { 
+        account, 
+        positions, 
+        log: `🛡️ Gatilho de Agressão Time&Trades: Venda (${side}) bloqueada para ${signal.symbol}. ${tapeAiResult.executionGate.reasonShort}`, 
+        tradeOpened: false 
+      };
     }
   }
 
@@ -546,9 +1056,18 @@ export function processConfluenceSignalForTrading(
     maxOperationTimeMinutes: strategies.maxMinutes,
     timeDecayProfitTargetUsd: strategies.timeDecayTargetUsd,
     isDynamicTrailingStopEnabled: strategies.isDynamicTrailing,
+    isAggressionTriggerEnabled: account.isAggressionTriggerEnabled !== false,
+    aggressionTriggerStatus: tapeAiResult 
+      ? (side === 'LONG' 
+          ? (tapeAiResult.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro' : 'Agressão Compradora A Favor') 
+          : (tapeAiResult.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato' : 'Agressão Vendedora A Favor'))
+      : 'Gatilho A Favor Confirmado',
     executionLogs: [
       `Posição ${side} EXECUTADA A MERCADO em US$ ${entryPrice.toFixed(4)} (Sinal IA: ${signal.finalSignal})`,
       `Gestão de Risco: Stop Loss inicial armado em US$ ${sl} | TP1: US$ ${tp1} | TP2: US$ ${tp2}`,
+      ...(account.isAggressionTriggerEnabled !== false 
+        ? [`🛡️ [GATILHO DE AGRESSÃO LIBERADO]: Agressão no Time & Trades a favor (${side === 'LONG' ? (tapeAiResult?.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro no Ask' : 'Pressão Compradora') : (tapeAiResult?.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato no Bid' : 'Pressão Vendedora')})`] 
+        : [`🛡️ [GATILHO DE AGRESSÃO]: Desativado nas configurações`]),
       ...strategies.strategySummaryLogs
     ]
   };
@@ -573,11 +1092,13 @@ export function processConfluenceSignalForTrading(
  */
 export function executeDirectTradeForCrypto(
   crypto: CryptoMention,
-  side: PositionSide,
+  requestedSide: PositionSide,
   signal: HighFrequencyConfluenceResult,
   account: TradingAccount,
   positions: TradePosition[]
 ): { account: TradingAccount, positions: TradePosition[], log: string, tradeOpened: boolean } {
+  const isInverted = account.isInvertedExecutionEnabled !== false;
+  const side = isInverted ? invertSide(requestedSide) : requestedSide;
   const openPositions = positions.filter(p => p.status === 'OPEN');
 
   if (openPositions.length >= MAX_CONCURRENT_POSITIONS) {
@@ -587,6 +1108,20 @@ export function executeDirectTradeForCrypto(
   const hasOpenForSymbol = openPositions.some(p => p.symbol === crypto.symbol);
   if (hasOpenForSymbol) {
     return { account, positions, log: `Já existe uma posição aberta para ${crypto.symbol}.`, tradeOpened: false };
+  }
+
+  // Cooldown check post-close (20s, 1m, 3m, 5m, 10m)
+  const remainingCooldown = getSymbolCooldownRemainingSeconds(crypto.symbol, positions, account.reentryCooldownSeconds);
+  if (remainingCooldown > 0) {
+    return { account, positions, log: `⏳ Cooldown pós-fechamento ativo para ${crypto.symbol}: Liberado para nova ordem em ${remainingCooldown}s após o fechamento da ordem anterior.`, tradeOpened: false };
+  }
+
+  // Anti-Trap & Aggression checks are advisory for manual trades to ensure execution succeeds
+  const entryPriceCheck = crypto.priceUsd > 0 ? crypto.priceUsd : (signal.currentPriceUsd || 1);
+  let tapeAiResult: any = null;
+  if (account.isAggressionTriggerEnabled) {
+    const flowData = generateLiveOrderFlowData(crypto);
+    tapeAiResult = analyzeTimesAndTradesTapeAi(crypto.symbol, entryPriceCheck, flowData.timesAndTrades);
   }
 
   const maxRiskPct = account.maxRiskPerTradePct || 2;
@@ -706,6 +1241,40 @@ export function executeHftOrderWithImputedData(
   const positions = params.positions || getPositions();
   const openPositions = positions.filter(p => p.status === 'OPEN');
 
+  const isInverted = account.isInvertedExecutionEnabled !== false;
+  const side = isInverted ? invertSide(params.side) : params.side;
+
+  // Anti-Trap Filter
+  if (params.hftAnalysis?.secondaryValidation?.visualBookAnalysis) {
+    const { askWallPrice, bidWallPrice } = params.hftAnalysis.secondaryValidation.visualBookAnalysis;
+    const entryPriceCheck = params.entryPrice || params.currentPrice || 1;
+    const proximityThreshold = 0.005; // 0.5% proximity warning
+    
+    if (side === 'LONG' && askWallPrice > entryPriceCheck) {
+      const distanceToRes = (askWallPrice - entryPriceCheck) / entryPriceCheck;
+      if (distanceToRes < proximityThreshold) {
+        return { 
+          account, 
+          positions, 
+          log: `Filtro Anti-Armadilha (Sinc. Book): Compra HFT bloqueada para ${params.symbol}. Preço (US$ ${entryPriceCheck.toFixed(4)}) perigosamente próximo da resistência (US$ ${askWallPrice.toFixed(4)}).`, 
+          tradeOpened: false 
+        };
+      }
+    }
+    
+    if (side === 'SHORT' && bidWallPrice > 0 && entryPriceCheck > bidWallPrice) {
+      const distanceToSup = (entryPriceCheck - bidWallPrice) / entryPriceCheck;
+      if (distanceToSup < proximityThreshold) {
+        return { 
+          account, 
+          positions, 
+          log: `Filtro Anti-Armadilha (Sinc. Book): Venda HFT bloqueada para ${params.symbol}. Preço (US$ ${entryPriceCheck.toFixed(4)}) perigosamente próximo do suporte (US$ ${bidWallPrice.toFixed(4)}).`, 
+          tradeOpened: false 
+        };
+      }
+    }
+  }
+
   // Check 1: Max 3 concurrent positions
   if (openPositions.length >= MAX_CONCURRENT_POSITIONS) {
     return { 
@@ -727,6 +1296,46 @@ export function executeHftOrderWithImputedData(
     };
   }
 
+  // Check 2b: Configurable Post-Close Cooldown per symbol (20s, 1m, 3m, 5m, 10m)
+  const remainingCooldown = getSymbolCooldownRemainingSeconds(params.symbol, positions, account.reentryCooldownSeconds);
+  if (remainingCooldown > 0) {
+    return { 
+      account, 
+      positions, 
+      log: `⏳ Cooldown pós-fechamento ativo para ${params.symbol}: Liberado para nova ordem em ${remainingCooldown}s após o fechamento da ordem anterior.`, 
+      tradeOpened: false 
+    };
+  }
+
+  // Gatilho de Execução Time & Trades (Liberar SOMENTE se agressão for a favor da ordem executada)
+  let tapeAiResult: any = null;
+  if (params.isAggressionTriggerEnabled !== false && account.isAggressionTriggerEnabled !== false) {
+    const entryPriceCheck = params.entryPrice && params.entryPrice > 0 ? params.entryPrice : (params.currentPrice > 0 ? params.currentPrice : 100);
+    const trades = params.timesAndTrades && params.timesAndTrades.length > 0 
+      ? params.timesAndTrades 
+      : generateLiveOrderFlowData({ symbol: params.symbol, name: params.coinName || params.symbol, priceUsd: entryPriceCheck, change24h: 0 } as any).timesAndTrades;
+    
+    tapeAiResult = analyzeTimesAndTradesTapeAi(params.symbol, entryPriceCheck, trades);
+
+    if (side === 'LONG' && !tapeAiResult.executionGate.isLongAllowed) {
+      return { 
+        account, 
+        positions, 
+        log: `🛡️ Gatilho de Agressão Time&Trades: Ordem HFT de COMPRA bloqueada para ${params.symbol}. ${tapeAiResult.executionGate.reasonLong}`, 
+        tradeOpened: false 
+      };
+    }
+
+    if (side === 'SHORT' && !tapeAiResult.executionGate.isShortAllowed) {
+      return { 
+        account, 
+        positions, 
+        log: `🛡️ Gatilho de Agressão Time&Trades: Ordem HFT de VENDA bloqueada para ${params.symbol}. ${tapeAiResult.executionGate.reasonShort}`, 
+        tradeOpened: false 
+      };
+    }
+  }
+
   const leverage = Math.max(1, Math.min(20, params.leverage || 1));
   const rawSizeUsd = params.sizeUsd > 0 ? params.sizeUsd : (account.demoBalanceUsd * 0.05);
   const marginRequired = rawSizeUsd / leverage;
@@ -746,7 +1355,7 @@ export function executeHftOrderWithImputedData(
   const effectiveMargin = Math.min(marginRequired, account.availableMarginUsd);
   const effectiveSizeUsd = effectiveMargin * leverage;
 
-  const isLong = params.side === 'LONG';
+  const isLong = side === 'LONG';
   const entryPrice = params.entryPrice && params.entryPrice > 0 ? params.entryPrice : (params.currentPrice > 0 ? params.currentPrice : 100);
   const stepRatio = entryPrice > 1000 ? 0.003 : 0.008;
 
@@ -818,7 +1427,7 @@ export function executeHftOrderWithImputedData(
     id: `pos_${Date.now()}_${params.symbol}`,
     symbol: params.symbol,
     coinName: params.coinName || params.symbol,
-    side: params.side,
+    side,
     entryPrice,
     currentPrice: entryPrice,
     sizeUsd: Number(effectiveSizeUsd.toFixed(2)),
@@ -846,9 +1455,20 @@ export function executeHftOrderWithImputedData(
     maxOperationTimeMinutes: strategies.maxMinutes,
     timeDecayProfitTargetUsd: strategies.timeDecayTargetUsd,
     isDynamicTrailingStopEnabled: strategies.isDynamicTrailing,
+    isAggressionTriggerEnabled: account.isAggressionTriggerEnabled !== false && params.isAggressionTriggerEnabled !== false,
+    aggressionTriggerStatus: tapeAiResult 
+      ? (side === 'LONG' 
+          ? (tapeAiResult.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro' : 'Agressão Compradora A Favor') 
+          : (tapeAiResult.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato' : 'Agressão Vendedora A Favor'))
+      : 'Gatilho A Favor Confirmado',
     executionLogs: [
-      `⚡ Gatilho HFT com Dados Imputados: Ordem ${params.side} aberta em ${params.symbol} a US$ ${entryPrice.toFixed(4)} ${hftSigText}`,
+      isInverted
+        ? `🔄 Execução Invertida (Inverso / Contra-Tendência): Ordem original [${params.side}] executada como ${side} em ${params.symbol} a US$ ${entryPrice.toFixed(4)} ${hftSigText}`
+        : `⚡ Gatilho HFT com Dados Imputados: Ordem ${side} aberta em ${params.symbol} a US$ ${entryPrice.toFixed(4)} ${hftSigText}`,
       `⚙️ Parâmetros: Tamanho: US$ ${effectiveSizeUsd.toFixed(2)} (Margem: US$ ${effectiveMargin.toFixed(2)} @ ${leverage}x) | SL: US$ ${sl} | TP1: US$ ${tp1}`,
+      ...(account.isAggressionTriggerEnabled !== false && params.isAggressionTriggerEnabled !== false
+        ? [`🛡️ [GATILHO DE AGRESSÃO LIBERADO]: Agressão no Time & Trades a favor (${side === 'LONG' ? (tapeAiResult?.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro no Ask' : 'Pressão Compradora') : (tapeAiResult?.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato no Bid' : 'Pressão Vendedora')})`] 
+        : [`🛡️ [GATILHO DE AGRESSÃO]: Desativado nas configurações`]),
       params.orderNote ? `📝 Nota: ${params.orderNote}` : `🤖 Calibrado com base nas recomendações do Analisador HFT e dados imputados.`,
       ...strategies.strategySummaryLogs
     ]
@@ -863,7 +1483,9 @@ export function executeHftOrderWithImputedData(
   return {
     account,
     positions,
-    log: `⚡ Gatilho HFT Executado: Ordem ${params.side} ABERTA em ${params.symbol} por US$ ${entryPrice} (Tamanho: US$ ${effectiveSizeUsd.toFixed(2)}).`,
+    log: isInverted
+      ? `🔄 Execução Invertida: Ordem ${side} (invertida de ${params.side}) ABERTA em ${params.symbol} por US$ ${entryPrice} (Tamanho: US$ ${effectiveSizeUsd.toFixed(2)}).`
+      : `⚡ Gatilho HFT Executado: Ordem ${side} ABERTA em ${params.symbol} por US$ ${entryPrice} (Tamanho: US$ ${effectiveSizeUsd.toFixed(2)}).`,
     tradeOpened: true,
     position: newPosition
   };
@@ -943,13 +1565,13 @@ export function updateActivePositions(
       }
     }
 
-    // 1. Check Quick Profit Target (Auto Take-Profit Scalper: 10 cents / US$ 0.10)
+    // 1. Check Quick Profit Target (Auto Take-Profit Scalper: 2 cents / US$ 0.02)
     const isQuickProfitEnabled = pos.isQuickProfitExitEnabled !== undefined
       ? pos.isQuickProfitExitEnabled
       : (account.isQuickProfitExitEnabled !== false);
     const targetProfit = typeof pos.targetProfitUsd === 'number' && pos.targetProfitUsd > 0
       ? pos.targetProfitUsd
-      : (typeof account.targetProfitUsd === 'number' && account.targetProfitUsd > 0 ? account.targetProfitUsd : 0.10);
+      : (typeof account.targetProfitUsd === 'number' && account.targetProfitUsd > 0 ? account.targetProfitUsd : 0.02);
 
     if (isQuickProfitEnabled && pos.unrealizedPnlUsd >= targetProfit) {
       shouldClose = true;
@@ -957,38 +1579,64 @@ export function updateActivePositions(
       closeLog = `🎯 Alvo Scalper Atingido (+US$ ${pos.unrealizedPnlUsd.toFixed(2)} ≥ US$ ${targetProfit.toFixed(2)} / +${pos.unrealizedPnlPct.toFixed(2)}%)! Ordem finalizada no ganho e margem liberada para nova entrada.`;
     }
 
-    // 2. Check Operation Time Management (Max 5 minutes -> close permitted only if >= 3 cents / US$ 0.03 positive)
-    const isTimeManagementEnabled = pos.isTimeManagementEnabled !== undefined
-      ? pos.isTimeManagementEnabled
-      : (account.isTimeManagementEnabled !== false);
+    // 2. Check Operation Time Management (Never close in loss / prejuízo; only close with 0 cents positive >= US$ 0.00)
+    const isTimeManagementEnabled = account.isTimeManagementEnabled !== false && pos.isTimeManagementEnabled !== false;
     const maxOperationMinutes = typeof pos.maxOperationTimeMinutes === 'number' && pos.maxOperationTimeMinutes > 0
       ? pos.maxOperationTimeMinutes
-      : (account.maxOperationTimeMinutes || 5);
+      : (account.maxOperationTimeMinutes || 1.5);
     const maxOperationTimeMs = maxOperationMinutes * 60 * 1000;
-    const timeDecayProfitTargetUsd = typeof pos.timeDecayProfitTargetUsd === 'number' && pos.timeDecayProfitTargetUsd > 0
-      ? pos.timeDecayProfitTargetUsd
-      : (typeof account.timeDecayProfitTargetUsd === 'number' && account.timeDecayProfitTargetUsd > 0 ? account.timeDecayProfitTargetUsd : 0.03);
 
     const positionOpenTime = pos.openTime || Date.now();
     const elapsedMs = Date.now() - positionOpenTime;
 
-    if (!shouldClose && isTimeManagementEnabled && elapsedMs >= maxOperationTimeMs && pos.unrealizedPnlUsd >= timeDecayProfitTargetUsd) {
-      shouldClose = true;
-      closeReason = 'TIME_EXPIRATION';
-      const elapsedMinStr = (elapsedMs / (60 * 1000)).toFixed(1);
-      closeLog = `⏱️ Tempo Limite (${elapsedMinStr} min ≥ ${maxOperationMinutes} min): Ordem finalizada com lucro permitido de +US$ ${pos.unrealizedPnlUsd.toFixed(2)} (≥ +US$ ${timeDecayProfitTargetUsd.toFixed(2)} / +3¢)! Margem liberada para nova entrada.`;
+    if (!shouldClose && isTimeManagementEnabled && elapsedMs >= maxOperationTimeMs) {
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const elapsedMinStr = elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s` : `${elapsedSec}s`;
+      const targetMinStr = maxOperationMinutes === 1.5 ? '1m 30s' : `${maxOperationMinutes} min`;
+
+      // Case A: If profit is >= 3 cents (+US$ 0.03), ignore time limit and let Trailing Stop ride
+      if (pos.unrealizedPnlUsd >= 0.03) {
+        if (!pos.timeLimitIgnoredLogAdded) {
+          pos.timeLimitIgnoredLogAdded = true;
+          pos.executionLogs.push(`⏱️ Tempo Limite (${targetMinStr}) atingido, porém a ordem apresenta lucro de +US$ ${pos.unrealizedPnlUsd.toFixed(2)} (≥ +3¢). Tempo de operação ignorado; mantendo posição aberta sob proteção do Trailing Stop.`);
+          positionsChanged = true;
+        }
+      } 
+      // Case B: If profit is between 0 cents positive and 3 cents (+US$ 0.00 to +US$ 0.029), close on 0 cents positive without loss
+      else if (pos.unrealizedPnlUsd >= 0.00) {
+        shouldClose = true;
+        closeReason = 'TIME_EXPIRATION';
+        closeLog = `⏱️ Tempo Limite (${elapsedMinStr} ≥ ${targetMinStr}): Ordem finalizada com 0 centavos positivo (+US$ ${pos.unrealizedPnlUsd.toFixed(2)} ≥ US$ 0,00 / Sem Prejuízo) para liberar margem.`;
+      } 
+      // Case C: Order is in loss / negative PnL (< US$ 0.00) -> NEVER close on time! Hold position.
+      else {
+        if (!pos.timeLimitLossHoldingLogAdded) {
+          pos.timeLimitLossHoldingLogAdded = true;
+          pos.executionLogs.push(`🛡️ Regra Anti-Prejuízo de Tempo: Tempo Limite (${elapsedMinStr} ≥ ${targetMinStr}) atingido, mas a ordem está em prejuízo (-US$ ${Math.abs(pos.unrealizedPnlUsd).toFixed(2)}). Ordem mantida aberta aguardando retorno a 0 centavos positivo ou Take Profit.`);
+          positionsChanged = true;
+        }
+      }
     }
 
-    // 3. Check AI Divergence (Strict check: any change in direction closes the order)
+    // 3. Check AI Divergence (Only close if enabled and unrealized PnL is less than 1 cent of dollar: < US$ 0.01)
     const latestSignal = latestAiSignals[pos.symbol];
+    const isAiDivergenceExitEnabled = account.isAiDivergenceExitEnabled !== false;
     
-    if (!shouldClose && latestSignal) {
+    if (!shouldClose && isAiDivergenceExitEnabled && latestSignal) {
       const latestSide = determineSignalSide(latestSignal);
       // If AI detected a solid new direction that opposes the current position side
       if (latestSide && latestSide !== pos.side) {
-        shouldClose = true;
-        closeReason = 'AI_DIVERGENCE';
-        closeLog = `🤖 Divergência de Fluxo HFT: Direção reverteu para ${latestSide} (${latestSignal.finalSignal}). Posição encerrada instantaneamente para reanálise e nova entrada.`;
+        if (pos.unrealizedPnlUsd < 0.01) {
+          shouldClose = true;
+          closeReason = 'AI_DIVERGENCE';
+          closeLog = `🤖 Divergência de Fluxo HFT: Direção reverteu para ${latestSide} (${latestSignal.finalSignal}) e o lucro de +US$ ${pos.unrealizedPnlUsd.toFixed(2)} é menor que 1 centavo (< US$ 0,01). Posição encerrada instantaneamente para reanálise e nova entrada.`;
+        } else {
+          if (!pos.aiDivergenceIgnoredLogAdded) {
+            pos.aiDivergenceIgnoredLogAdded = true;
+            pos.executionLogs.push(`🤖 Divergência de Fluxo HFT (${latestSide}): Direção reverteu, porém a ordem apresenta lucro de +US$ ${pos.unrealizedPnlUsd.toFixed(2)} (≥ +1¢ / US$ 0,01). Encerramento por divergência ignorado; mantendo posição sob proteção.`);
+            positionsChanged = true;
+          }
+        }
       }
     }
 
@@ -1069,18 +1717,40 @@ export function updateActivePositions(
     if (!shouldClose) {
       if (pos.side === 'LONG' && currentPrice <= pos.currentStopLoss) {
         shouldClose = true;
-        const isProfitLocked = pos.currentStopLoss > pos.entryPrice || (pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0);
+        
+        // Garante a execução no preço exato do Stop Loss (sem slippage)
+        const exactPriceDiff = pos.currentStopLoss - pos.entryPrice;
+        pos.unrealizedPnlPct = (exactPriceDiff / pos.entryPrice) * 100;
+        pos.unrealizedPnlUsd = (pos.sizeUsd * pos.unrealizedPnlPct) / 100;
+        
+        const isProfitLocked = pos.currentStopLoss >= pos.entryPrice || (pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0);
         closeReason = isProfitLocked ? 'TRAILING_STOP' : 'STOP_LOSS';
+        
+        if (isProfitLocked && pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0) {
+          pos.unrealizedPnlUsd = Math.max(pos.unrealizedPnlUsd, pos.trailingLockedProfitUsd);
+        }
+        
         closeLog = isProfitLocked 
-          ? `🛡️ Trailing Stop Dinâmico (Lucro Travado): Proteção acionada em US$ ${currentPrice} (PnL Realizado: ${pos.unrealizedPnlUsd >= 0 ? '+' : ''}$${pos.unrealizedPnlUsd.toFixed(2)} | Travado no Stop: +US$ ${(pos.trailingLockedProfitUsd || 0).toFixed(2)}).`
-          : `Stop Loss de Invalidação acionado em US$ ${currentPrice}.`;
+          ? `🛡️ Trailing Stop (Lucro Garantido): Execução cravada no Stop em US$ ${pos.currentStopLoss.toFixed(4)}. PnL Realizado protegido: +US$ ${pos.unrealizedPnlUsd.toFixed(2)}.`
+          : `Stop Loss de Invalidação acionado em US$ ${pos.currentStopLoss.toFixed(4)}.`;
       } else if (pos.side === 'SHORT' && currentPrice >= pos.currentStopLoss) {
         shouldClose = true;
-        const isProfitLocked = pos.currentStopLoss < pos.entryPrice || (pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0);
+        
+        // Garante a execução no preço exato do Stop Loss (sem slippage)
+        const exactPriceDiff = pos.entryPrice - pos.currentStopLoss;
+        pos.unrealizedPnlPct = (exactPriceDiff / pos.entryPrice) * 100;
+        pos.unrealizedPnlUsd = (pos.sizeUsd * pos.unrealizedPnlPct) / 100;
+        
+        const isProfitLocked = pos.currentStopLoss <= pos.entryPrice || (pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0);
         closeReason = isProfitLocked ? 'TRAILING_STOP' : 'STOP_LOSS';
+        
+        if (isProfitLocked && pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0) {
+          pos.unrealizedPnlUsd = Math.max(pos.unrealizedPnlUsd, pos.trailingLockedProfitUsd);
+        }
+        
         closeLog = isProfitLocked 
-          ? `🛡️ Trailing Stop Dinâmico (Lucro Travado): Proteção acionada em US$ ${currentPrice} (PnL Realizado: ${pos.unrealizedPnlUsd >= 0 ? '+' : ''}$${pos.unrealizedPnlUsd.toFixed(2)} | Travado no Stop: +US$ ${(pos.trailingLockedProfitUsd || 0).toFixed(2)}).`
-          : `Stop Loss de Invalidação acionado em US$ ${currentPrice}.`;
+          ? `🛡️ Trailing Stop (Lucro Garantido): Execução cravada no Stop em US$ ${pos.currentStopLoss.toFixed(4)}. PnL Realizado protegido: +US$ ${pos.unrealizedPnlUsd.toFixed(2)}.`
+          : `Stop Loss de Invalidação acionado em US$ ${pos.currentStopLoss.toFixed(4)}.`;
       }
     }
 

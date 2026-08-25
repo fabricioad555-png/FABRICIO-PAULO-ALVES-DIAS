@@ -59,10 +59,15 @@ import {
   getTradingAccount, 
   getPositions, 
   manuallyClosePosition,
+  updateAggressionTriggerSettings,
+  armOrderTrigger,
+  cancelArmedTrigger,
+  getArmedTriggers,
+  ARMED_TRIGGERS_EVENT,
   TRADING_ACCOUNT_EVENT 
 } from '../services/tradingExecutionService';
-import { TradePosition, PositionSide, TradingAccount } from '../types/tradingTypes';
-import { generateLocalHftFlowAnalysis, HftFlowAnalysisResult } from '../services/hftFlowAnalysisService';
+import { TradePosition, PositionSide, TradingAccount, ArmedOrderTrigger } from '../types/tradingTypes';
+import { generateLocalHftFlowAnalysis, HftFlowAnalysisResult, analyzeTimesAndTradesTapeAi } from '../services/hftFlowAnalysisService';
 
 interface SingleCryptoTimesAndTradesProps {
   crypto: Top10mProfitCrypto;
@@ -74,6 +79,40 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
   crypto,
   cycleTimeRemaining
 }) => {
+  // Armed Triggers State for this crypto
+  const [armedTriggers, setArmedTriggers] = useState<ArmedOrderTrigger[]>(() => getArmedTriggers());
+
+  useEffect(() => {
+    const handleArmedUpdate = () => {
+      setArmedTriggers(getArmedTriggers());
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener(ARMED_TRIGGERS_EVENT, handleArmedUpdate);
+      return () => window.removeEventListener(ARMED_TRIGGERS_EVENT, handleArmedUpdate);
+    }
+  }, []);
+
+  const handleArmTrigger = (side: PositionSide) => {
+    const res = armOrderTrigger({
+      symbol: crypto.symbol,
+      coinName: crypto.name || crypto.symbol,
+      targetSide: side,
+      sizeUsd: 100,
+      leverage: 5,
+      reason: `Gatilho Armado manualmente no Time & Trades para ${crypto.symbol}`
+    });
+    setArmedTriggers(getArmedTriggers());
+    setSaveSuccessMsg(res.log);
+    setTimeout(() => setSaveSuccessMsg(null), 4000);
+  };
+
+  const handleCancelTrigger = (triggerId: string) => {
+    const res = cancelArmedTrigger(triggerId);
+    setArmedTriggers(getArmedTriggers());
+    setSaveSuccessMsg(res.log);
+    setTimeout(() => setSaveSuccessMsg(null), 3000);
+  };
+
   // 100 negotiation lines state
   const [trades, setTrades] = useState<TimesAndTradeRow[]>(() => generate100NegotiationTradesForCoin(crypto));
   const [isLiveStreaming, setIsLiveStreaming] = useState<boolean>(true);
@@ -632,6 +671,283 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
         </div>
       </div>
 
+      {/* RASTREADORES DE FLUXO E GATILHOS NO TIMES & TRADES */}
+      {(() => {
+        const currentSpot = trades.length > 0 ? trades[0].price : (crypto.priceUsd || 100);
+        const tapeAi = hftAnalysis?.tapeAiAnalysis || analyzeTimesAndTradesTapeAi(crypto.symbol, currentSpot, trades);
+        
+        const isBuyerActive = tapeAi.buyerEscalation.isActive;
+        const isSellerActive = tapeAi.sellerEscalation.isActive;
+        const isTriggerActive = account.isAggressionTriggerEnabled !== false;
+
+        const handleToggleLocalTrigger = () => {
+          const nextVal = !isTriggerActive;
+          const updated = updateAggressionTriggerSettings(nextVal);
+          setAccount(updated);
+        };
+
+        return (
+          <div className="space-y-2">
+            {/* RASTREADOR 1: IA ANALISA COMPRADOR COMPRANDO MAIS CARO */}
+            <div className={`p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md transition-all ${
+              isBuyerActive 
+                ? 'bg-emerald-950/70 border-emerald-500 text-emerald-200 shadow-emerald-950/50 ring-1 ring-emerald-400/50' 
+                : 'bg-slate-900/60 border-slate-800/80 text-slate-400'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                <div className={`p-2 rounded-xl border shrink-0 ${
+                  isBuyerActive 
+                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/60 animate-pulse shadow-md shadow-emerald-500/20' 
+                    : 'bg-slate-800 text-slate-500 border-slate-700'
+                }`}>
+                  <TrendingUp className="w-4 h-4" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      IA Tape Reading: Compradores Comprando Mais Caro
+                    </span>
+                    <span className={`text-[8.5px] px-2 py-0.5 rounded font-extrabold border ${
+                      isBuyerActive 
+                        ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400' 
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      {isBuyerActive ? '🟢 SINALIZADO: COMPRADOR COMPRANDO MAIS CARO' : '⚪ AGUARDANDO COMPRA MAIS CARA'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] leading-tight font-sans">
+                    {tapeAi.buyerEscalation.aiDiagnosis}
+                  </p>
+                  {isBuyerActive && (
+                    <div className="flex items-center gap-3 text-[9px] text-emerald-300 font-mono font-bold pt-0.5 flex-wrap">
+                      <span>• Aumento: <strong>+${tapeAi.buyerEscalation.priceDifferenceUsd.toFixed(4)} (+{tapeAi.buyerEscalation.priceDifferencePct.toFixed(2)}%)</strong></span>
+                      <span>• Início: <strong>${tapeAi.buyerEscalation.startPrice.toFixed(4)}</strong> ➔ Atual: <strong>${tapeAi.buyerEscalation.currentPrice.toFixed(4)}</strong></span>
+                      <span>• Sequência Ask: <strong>{tapeAi.buyerEscalation.consecutiveCount} ordens</strong></span>
+                      <span>• Volume Comprador: <strong>${Math.round(tapeAi.buyerEscalation.totalVolumeUsd).toLocaleString()}</strong></span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 text-right self-end sm:self-center">
+                <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 border shadow-sm ${
+                  isBuyerActive 
+                    ? 'bg-emerald-500 text-black border-emerald-300 shadow-emerald-900/40 animate-pulse' 
+                    : 'bg-slate-800/90 text-slate-400 border-slate-700'
+                }`}>
+                  {isBuyerActive ? '🟢 COMPRADOR COMPRANDO MAIS CARO' : '⚪ AGUARDANDO VARREDURA ASK'}
+                </span>
+              </div>
+            </div>
+
+            {/* RASTREADOR 2: IA ANALISA VENDEDOR VENDENDO MAIS BARATO */}
+            <div className={`p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md transition-all ${
+              isSellerActive 
+                ? 'bg-rose-950/70 border-rose-500 text-rose-200 shadow-rose-950/50 ring-1 ring-rose-400/50' 
+                : 'bg-slate-900/60 border-slate-800/80 text-slate-400'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                <div className={`p-2 rounded-xl border shrink-0 ${
+                  isSellerActive 
+                    ? 'bg-rose-500/20 text-rose-400 border-rose-500/60 animate-pulse shadow-md shadow-rose-500/20' 
+                    : 'bg-slate-800 text-slate-500 border-slate-700'
+                }`}>
+                  <TrendingDown className="w-4 h-4" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      IA Tape Reading: Vendedores Vendendo Mais Barato
+                    </span>
+                    <span className={`text-[8.5px] px-2 py-0.5 rounded font-extrabold border ${
+                      isSellerActive 
+                        ? 'bg-rose-500/30 text-rose-200 border-rose-400' 
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      {isSellerActive ? '🔴 SINALIZADO: VENDEDOR VENDENDO MAIS BARATO' : '⚪ AGUARDANDO VENDA MAIS BARATA'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] leading-tight font-sans">
+                    {tapeAi.sellerEscalation.aiDiagnosis}
+                  </p>
+                  {isSellerActive && (
+                    <div className="flex items-center gap-3 text-[9px] text-rose-300 font-mono font-bold pt-0.5 flex-wrap">
+                      <span>• Queda: <strong>-${tapeAi.sellerEscalation.priceDifferenceUsd.toFixed(4)} (-{tapeAi.sellerEscalation.priceDifferencePct.toFixed(2)}%)</strong></span>
+                      <span>• Início: <strong>${tapeAi.sellerEscalation.startPrice.toFixed(4)}</strong> ➔ Atual: <strong>${tapeAi.sellerEscalation.currentPrice.toFixed(4)}</strong></span>
+                      <span>• Sequência Bid: <strong>{tapeAi.sellerEscalation.consecutiveCount} ordens</strong></span>
+                      <span>• Volume Vendedor: <strong>${Math.round(tapeAi.sellerEscalation.totalVolumeUsd).toLocaleString()}</strong></span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 text-right self-end sm:self-center">
+                <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 border shadow-sm ${
+                  isSellerActive 
+                    ? 'bg-rose-500 text-white border-rose-300 shadow-rose-900/40 animate-pulse' 
+                    : 'bg-slate-800/90 text-slate-400 border-slate-700'
+                }`}>
+                  {isSellerActive ? '🔴 VENDEDOR VENDENDO MAIS BARATO' : '⚪ AGUARDANDO VARREDURA BID'}
+                </span>
+              </div>
+            </div>
+
+            {/* GATILHO DE EXECUÇÃO DA ORDEM (LIBERAR SOMENTE SE AGRESSÃO FOR A FAVOR) */}
+            <div className="p-3 rounded-xl bg-gradient-to-r from-[#0d141e] via-[#0e1726] to-[#0d141e] border border-cyan-500/40 shadow-lg space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-white">
+                        Gatilho de Execução: Liberar Somente com Agressão a Favor
+                      </span>
+                      <span className={`text-[8.5px] px-2 py-0.5 rounded font-bold border ${
+                        isTriggerActive 
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' 
+                          : 'bg-slate-800 text-slate-400 border-slate-700'
+                      }`}>
+                        {isTriggerActive ? '🛡️ GATILHO TIME & TRADES ATIVO' : 'DESATIVADO'}
+                      </span>
+                    </div>
+                    <p className="text-[9.5px] text-slate-400 font-sans">
+                      Analisa a fita em tempo real: bloqueia compras se vendedores estiverem despejando e bloqueia vendas se compradores estiverem varrendo para cima.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleToggleLocalTrigger}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition shrink-0 ${
+                    isTriggerActive
+                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 hover:bg-cyan-500/30'
+                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                >
+                  {isTriggerActive ? '🛡️ Ativo (Clique p/ Desativar)' : 'Desativado (Clique p/ Ativar)'}
+                </button>
+              </div>
+
+              {/* Status de Liberação para LONG e SHORT */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[9.5px]">
+                {/* Status Compra (LONG) */}
+                <div className={`p-2 rounded-lg border flex items-start justify-between gap-2 ${
+                  tapeAi.executionGate.isLongAllowed 
+                    ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200' 
+                    : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                }`}>
+                  <div>
+                    <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                      <span>Ordem COMPRA (LONG):</span>
+                      <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase ${
+                        tapeAi.executionGate.isLongAllowed ? 'bg-emerald-500/30 text-emerald-200' : 'bg-rose-500/30 text-rose-200'
+                      }`}>
+                        {tapeAi.executionGate.isLongAllowed ? '🟢 LIBERADA' : '⛔ BLOQUEADA'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-slate-300 leading-tight">
+                      {tapeAi.executionGate.reasonLong}
+                    </p>
+                  </div>
+                  <span className="text-[12px] shrink-0 font-bold">
+                    {tapeAi.executionGate.isLongAllowed ? '✓' : '✗'}
+                  </span>
+                </div>
+
+                {/* Status Venda (SHORT) */}
+                <div className={`p-2 rounded-lg border flex items-start justify-between gap-2 ${
+                  tapeAi.executionGate.isShortAllowed 
+                    ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200' 
+                    : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                }`}>
+                  <div>
+                    <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                      <span>Ordem VENDA (SHORT):</span>
+                      <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase ${
+                        tapeAi.executionGate.isShortAllowed ? 'bg-emerald-500/30 text-emerald-200' : 'bg-rose-500/30 text-rose-200'
+                      }`}>
+                        {tapeAi.executionGate.isShortAllowed ? '🔴 LIBERADA' : '⛔ BLOQUEADA'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-slate-300 leading-tight">
+                      {tapeAi.executionGate.reasonShort}
+                    </p>
+                  </div>
+                  <span className="text-[12px] shrink-0 font-bold">
+                    {tapeAi.executionGate.isShortAllowed ? '✓' : '✗'}
+                  </span>
+                </div>
+              </div>
+
+              {/* CONTROLES DE ARMAR GATILHO PARA LIBERAÇÃO DE ORDEM */}
+              {(() => {
+                const activeTrigger = armedTriggers.find(t => t.symbol === crypto.symbol && t.status === 'ARMED');
+                return (
+                  <div className="pt-2 border-t border-slate-800/80">
+                    {activeTrigger ? (
+                      <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md animate-pulse">
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+                          <div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-black text-amber-300 uppercase tracking-wider">
+                                ⚡ GATILHO ARMADO: {activeTrigger.targetSide === 'LONG' ? 'COMPRA (LONG)' : 'VENDA (SHORT)'}
+                              </span>
+                              <span className="text-[8.5px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/30 font-bold">
+                                Monitorando Fita Segundo a Segundo
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-slate-300 mt-0.5">
+                              Status Atual: <strong className="text-white">{activeTrigger.currentAggressionStatus}</strong>
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCancelTrigger(activeTrigger.id)}
+                          className="px-2.5 py-1 rounded bg-rose-600/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[9.5px] font-bold transition shrink-0 self-end sm:self-center"
+                        >
+                          ✕ Desarmar Gatilho
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                        <span className="text-[9px] text-slate-400 font-sans">
+                          ⚡ <strong>Armar Gatilho:</strong> O robô aguarda o momento exato em que a agressão no Time & Trades fica a favor antes de liberar a ordem.
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleArmTrigger('LONG')}
+                            className="px-2 py-1 rounded bg-emerald-600/30 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/50 text-[9px] font-bold flex items-center gap-1 transition"
+                            title="Armar gatilho de compra para liberar assim que houver agressão compradora"
+                          >
+                            <Zap className="w-3 h-3" />
+                            <span>Armar Gatilho COMPRA</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleArmTrigger('SHORT')}
+                            className="px-2 py-1 rounded bg-rose-600/30 hover:bg-rose-500/40 text-rose-300 border border-rose-500/50 text-[9px] font-bold flex items-center gap-1 transition"
+                            title="Armar gatilho de venda para liberar assim que houver agressão vendedora"
+                          >
+                            <Zap className="w-3 h-3" />
+                            <span>Armar Gatilho VENDA</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* HFT AI FLOW ANALYZER DASHBOARD */}
       <div className="p-3 rounded-xl bg-slate-950 border border-indigo-500/30 space-y-3.5 shadow-xl shadow-indigo-500/5 select-text">
         {/* Header */}
@@ -891,8 +1207,8 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
               </div>
             )}
 
-            {/* 6 PILARES DE MICROESTRUTURA HFT */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
+            {/* 7 PILARES DE MICROESTRUTURA HFT */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
               
               {/* 1. Tempo Médio por Ordem (Frequência) */}
               <div className="p-2 rounded-lg bg-[#0a0d12] border border-slate-800 flex flex-col justify-between space-y-1.5">
@@ -1037,6 +1353,41 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                   </p>
                 </div>
               </div>
+
+              {/* 7. Varredura Direcional (Sweeping Momentum) */}
+              {hftAnalysis.sweepingMomentum && (
+                <div className="p-2 rounded-lg bg-[#0a0d12] border border-slate-800 flex flex-col justify-between space-y-1.5">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[8px] text-slate-500 font-bold uppercase truncate">Varredura Direcional</span>
+                    <span className={`px-1 py-0.2 rounded text-[7.5px] font-black uppercase ${
+                      hftAnalysis.sweepingMomentum.color === 'rose'
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse'
+                        : hftAnalysis.sweepingMomentum.color === 'emerald'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse'
+                        : 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+                    }`}>
+                      {hftAnalysis.sweepingMomentum.status}
+                    </span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
+                      <Activity className="w-3 h-3 text-fuchsia-400 shrink-0" />
+                      <span className={
+                        hftAnalysis.sweepingMomentum.color === 'rose'
+                          ? 'text-rose-400'
+                          : hftAnalysis.sweepingMomentum.color === 'emerald'
+                          ? 'text-emerald-400'
+                          : 'text-slate-300'
+                      }>
+                        {hftAnalysis.sweepingMomentum.value}
+                      </span>
+                    </div>
+                    <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
+                      {hftAnalysis.sweepingMomentum.description}
+                    </p>
+                  </div>
+                </div>
+              )}
 
             </div>
 
@@ -1367,7 +1718,7 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                   </div>
                   <div className={`flex items-center gap-1 font-semibold ${account.isTimeManagementEnabled !== false ? 'text-amber-400' : 'text-slate-500 line-through'}`}>
                     <Timer className="w-3 h-3" />
-                    <span>Tempo ({account.maxOperationTimeMinutes || 5}min ➔ +3¢): {account.isTimeManagementEnabled !== false ? 'ATIVO' : 'DESATIVADO'}</span>
+                    <span>Tempo ({(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${account.maxOperationTimeMinutes}min`} | Proteção ≥3¢): {account.isTimeManagementEnabled !== false ? 'ATIVO' : 'DESATIVADO'}</span>
                   </div>
                   <div className={`flex items-center gap-1 font-semibold ${account.isQuickProfitExitEnabled !== false ? 'text-emerald-400' : 'text-slate-500 line-through'}`}>
                     <Zap className="w-3 h-3" />

@@ -329,8 +329,8 @@ ${cryptos.map(
                           {crypto.name}
                         </span>
                       </div>
-                      <span className={`text-[10px] font-bold ${crypto.priceChange24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {crypto.priceChange24h >= 0 ? '+' : ''}{crypto.priceChange24h}%
+                      <span className={`text-[10px] font-bold ${(crypto.change24h ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {(crypto.change24h ?? 0) >= 0 ? '+' : ''}{crypto.change24h ?? 0}%
                       </span>
                     </div>
                   </td>

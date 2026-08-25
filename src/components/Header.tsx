@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   BrainCircuit, 
   Search, 
@@ -9,8 +9,12 @@ import {
   Zap,
   Activity,
   Smartphone,
-  ShieldCheck
+  ShieldCheck,
+  Menu,
+  ChevronDown,
+  Check
 } from 'lucide-react';
+import { TOPIC_SECTIONS } from './TopicNavigationAnchorBar';
 
 interface HeaderProps {
   searchQuery: string;
@@ -39,11 +43,31 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleAutoRefresh,
   lastScanTime,
 }) => {
-  const scrollToAudit = () => {
-    const el = document.getElementById('section-system-audit');
+  const [isTopicsMenuOpen, setIsTopicsMenuOpen] = useState(false);
+  const topicsMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (topicsMenuRef.current && !topicsMenuRef.current.contains(event.target as Node)) {
+        setIsTopicsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
+      // Offset by header height
+      const y = el.getBoundingClientRect().top + window.pageYOffset - 120;
+      window.scrollTo({ top: y, behavior: 'smooth' });
     }
+    setIsTopicsMenuOpen(false);
+  };
+
+  const scrollToAudit = () => {
+    scrollToSection('section-system-audit');
   };
 
   return (
@@ -97,6 +121,31 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Action Tools & Instant Live Toggle */}
           <div className="flex items-center gap-2 w-full lg:w-auto overflow-x-auto pb-1 lg:pb-0 scrollbar-none justify-start lg:justify-end shrink-0">
             
+            {/* Lista Suspensa Nativa para Temas (Acesso Fácil) */}
+            <div className="relative shrink-0">
+              <select
+                onChange={(e) => {
+                  if (e.target.value) {
+                    scrollToSection(e.target.value);
+                    e.target.value = ""; // reset back to placeholder
+                  }
+                }}
+                defaultValue=""
+                className="appearance-none bg-[#12141a] hover:bg-[#181b24] text-indigo-300 text-[11px] font-bold rounded-xl pl-3 pr-8 py-1.5 border border-indigo-500/30 hover:border-indigo-500/60 focus:border-indigo-400 outline-none transition-all cursor-pointer shadow-sm"
+                title="Acesso rápido aos Tópicos (Temas)"
+              >
+                <option value="" disabled className="text-slate-500">
+                  Acesso Rápido (Temas)...
+                </option>
+                {TOPIC_SECTIONS.map((topic) => (
+                  <option key={topic.id} value={topic.id} className="text-slate-200 bg-slate-900">
+                    {topic.shortLabel}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-indigo-400 pointer-events-none" />
+            </div>
+
             {/* 24h Audit Shortcut */}
             <button
               type="button"

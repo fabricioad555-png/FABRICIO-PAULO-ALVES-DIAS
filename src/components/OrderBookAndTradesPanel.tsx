@@ -41,6 +41,7 @@ import {
   saveOrderFlowRecordToDatabase, 
   clearOrderFlowDatabase 
 } from '../services/orderFlowDataService';
+import { analyzeTimesAndTradesTapeAi } from '../services/hftFlowAnalysisService';
 
 interface OrderBookAndTradesPanelProps {
   crypto: CryptoMention;
@@ -279,6 +280,11 @@ const scrollToCenter = () => {
       return true;
     });
   }, [orderFlowData.timesAndTrades, tradeFilterType, minTradeValueUsd, highlightWhaleThresholdUsd]);
+
+  // IA Tape Reading Analysis
+  const tapeAiResult = useMemo(() => {
+    return analyzeTimesAndTradesTapeAi(crypto.symbol, orderFlowData.priceUsd, orderFlowData.timesAndTrades);
+  }, [crypto.symbol, orderFlowData.priceUsd, orderFlowData.timesAndTrades]);
 
   // Display levels based on rows filter
   const displayedBids = useMemo(() => {
@@ -654,6 +660,36 @@ const scrollToCenter = () => {
                 <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60">
                   Deslocamento Real
                 </span>
+              </div>
+
+              {/* IA Tape Reading Quick Status */}
+              <div className="p-2 rounded-lg bg-[#141824] border border-cyan-500/30 text-[10px] space-y-1">
+                <div className="flex items-center justify-between gap-1 flex-wrap">
+                  <span className="font-bold text-cyan-300 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    IA Tape Reading:
+                  </span>
+                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${
+                    tapeAiResult.buyerEscalation.isActive
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 animate-pulse'
+                      : tapeAiResult.sellerEscalation.isActive
+                      ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>
+                    {tapeAiResult.buyerEscalation.isActive
+                      ? '🟢 SINALIZADO: COMPRADOR COMPRANDO MAIS CARO'
+                      : tapeAiResult.sellerEscalation.isActive
+                      ? '🔴 SINALIZADO: VENDEDOR VENDENDO MAIS BARATO'
+                      : `⚪ FLUXO BALANCEADO (${tapeAiResult.buyAggressionPct}% C / ${tapeAiResult.sellAggressionPct}% V)`}
+                  </span>
+                </div>
+                <p className="text-[9.5px] text-slate-300 font-sans leading-tight">
+                  {tapeAiResult.buyerEscalation.isActive 
+                    ? `Compradores avançando no Ask (+US$ ${tapeAiResult.buyerEscalation.priceDifferenceUsd.toFixed(4)} / +${tapeAiResult.buyerEscalation.priceDifferencePct.toFixed(2)}%). Gatilho de Compra liberado!` 
+                    : tapeAiResult.sellerEscalation.isActive 
+                    ? `Vendedores aceitando preços mais baixos no Bid (-US$ ${tapeAiResult.sellerEscalation.priceDifferenceUsd.toFixed(4)} / -${tapeAiResult.sellerEscalation.priceDifferencePct.toFixed(2)}%). Gatilho de Venda liberado!`
+                    : `Aguardando varredura direcional de preços no Ask ou Bid.`}
+                </p>
               </div>
 
               {/* Table Column Headers */}

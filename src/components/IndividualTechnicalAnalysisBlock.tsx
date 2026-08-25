@@ -278,12 +278,26 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
     }
   };
 
-  const activeCrypto = React.useMemo(() => {
+  const activeCrypto: CryptoMention = React.useMemo(() => {
     return cryptos.find((c) => c.symbol === selectedSymbol) || cryptos[0] || {
+      id: 'solana-fallback',
       symbol: 'SOL',
       name: 'Solana',
       priceUsd: 214.50,
       change24h: 8.45,
+      mentions24h: 1200,
+      mentionsChange24h: 15,
+      sentimentScore: 78,
+      bullishPercent: 82,
+      bearishPercent: 10,
+      neutralPercent: 8,
+      topForum: 'reddit',
+      signal: 'alta_forte',
+      predictedDirection: 'UP',
+      predictedChangeRange: '+5% a +12%',
+      predictionConfidence: 85,
+      keyCatalyst: 'Crescimento de Soluções DeFi & Memecoins em Solana',
+      sparklineData: [200, 205, 210, 212, 214.50],
     };
   }, [cryptos, selectedSymbol]);
 
@@ -1102,8 +1116,8 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      {coin.iconUrl ? (
-                        <img src={coin.iconUrl} alt={coin.symbol} className="w-4 h-4 rounded-full object-cover" />
+                      {(coin as any).iconUrl ? (
+                        <img src={(coin as any).iconUrl} alt={coin.symbol} className="w-4 h-4 rounded-full object-cover" />
                       ) : (
                         <span className="w-4 h-4 rounded-full bg-indigo-900 text-[9px] font-bold text-indigo-300 flex items-center justify-center">
                           {coin.symbol[0]}

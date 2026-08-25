@@ -20,6 +20,7 @@ import { PasteAnalyzerModal } from './components/PasteAnalyzerModal';
 import { PredictiveMovementModal } from './components/PredictiveMovementModal';
 import { AICryptoChatDrawer } from './components/AICryptoChatDrawer';
 import { InstallAndroidModal } from './components/InstallAndroidModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 import { 
   INITIAL_MARKET_OVERVIEW, 
@@ -183,10 +184,12 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Auditoria do Sistema 24h & Auto-Cura"
         >
-          <SystemAuditModule 
-            cryptos={cryptos}
-            forumPosts={forumPosts}
-          />
+          <ErrorBoundary fallbackTitle="Auditoria do Sistema">
+            <SystemAuditModule 
+              cryptos={cryptos}
+              forumPosts={forumPosts}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 1: Auto-Trading Bot Execution Dashboard (Modo Demo HFT) */}
@@ -195,9 +198,11 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Bot de Execução & HFT Scalper"
         >
-          <TradingExecutionDashboard 
-            cryptos={cryptos}
-          />
+          <ErrorBoundary fallbackTitle="Painel Bot de Execução HFT">
+            <TradingExecutionDashboard 
+              cryptos={cryptos}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 2: Master High-Frequency AI Confluence Engine: Dual-Layer Multi-Factor & Microstructure Signal */}
@@ -206,15 +211,17 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Confluência de IA & Sinais"
         >
-          <HighFrequencyConfluenceAIBlock
-            cryptos={cryptos}
-            selectedSymbol={selectedCoinFilter}
-            onSelectSymbol={(symbol) => {
-              setSelectedCoinFilter(symbol);
-            }}
-            onOpenPredictionModal={handleOpenPredictionBySymbol}
-            forumPosts={forumPosts}
-          />
+          <ErrorBoundary fallbackTitle="Confluência de IA">
+            <HighFrequencyConfluenceAIBlock
+              cryptos={cryptos}
+              selectedSymbol={selectedCoinFilter}
+              onSelectSymbol={(symbol) => {
+                setSelectedCoinFilter(symbol);
+              }}
+              onOpenPredictionModal={handleOpenPredictionBySymbol}
+              forumPosts={forumPosts}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 3: International Crypto Forums Sentiment Radar */}
@@ -223,14 +230,16 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Radar de Fóruns & Sentimento Internacional"
         >
-          <InternationalForumsSentimentBlock
-            cryptos={cryptos}
-            forumPosts={forumPosts}
-            onSelectCoinFilter={(symbol) => {
-              setSelectedCoinFilter(symbol);
-            }}
-            onOpenPredictionModal={handleOpenPredictionBySymbol}
-          />
+          <ErrorBoundary fallbackTitle="Radar de Fóruns">
+            <InternationalForumsSentimentBlock
+              cryptos={cryptos}
+              forumPosts={forumPosts}
+              onSelectCoinFilter={(symbol) => {
+                setSelectedCoinFilter(symbol);
+              }}
+              onOpenPredictionModal={handleOpenPredictionBySymbol}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 4: Individual Technical & Order Book Analysis Block */}
@@ -239,14 +248,16 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Análise Técnica & Livro de Ofertas Individual"
         >
-          <IndividualTechnicalAnalysisBlock
-            cryptos={cryptos}
-            selectedSymbol={selectedCoinFilter}
-            onSelectSymbol={(symbol) => {
-              setSelectedCoinFilter(symbol);
-            }}
-            onOpenPredictionModal={handleOpenPredictionBySymbol}
-          />
+          <ErrorBoundary fallbackTitle="Análise Técnica">
+            <IndividualTechnicalAnalysisBlock
+              cryptos={cryptos}
+              selectedSymbol={selectedCoinFilter}
+              onSelectSymbol={(symbol) => {
+                setSelectedCoinFilter(symbol);
+              }}
+              onOpenPredictionModal={handleOpenPredictionBySymbol}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 5: On-Chain History (Network Data) - 12 Months Historical Analysis Block */}
@@ -255,11 +266,13 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Auditoria On-Chain e Histórico de 12 Meses"
         >
-          <OnChainHistoryAnalysisBlock
-            cryptos={cryptos}
-            selectedSymbol={selectedCoinFilter}
-            onOpenPredictionModal={handleOpenPredictionBySymbol}
-          />
+          <ErrorBoundary fallbackTitle="Histórico On-Chain">
+            <OnChainHistoryAnalysisBlock
+              cryptos={cryptos}
+              selectedSymbol={selectedCoinFilter}
+              onOpenPredictionModal={handleOpenPredictionBySymbol}
+            />
+          </ErrorBoundary>
         </section>
 
         {/* Tópico 6: Sentiment Heatmap Matrix */}
@@ -268,10 +281,12 @@ export default function App() {
           className="scroll-mt-36 transition-all"
           aria-label="Mapa de Calor de Sentimento (Heatmap)"
         >
-          <SentimentHeatmap
-            cryptos={cryptos}
-            onSelectCell={handleHeatmapSelectCell}
-          />
+          <ErrorBoundary fallbackTitle="Mapa de Calor">
+            <SentimentHeatmap
+              cryptos={cryptos}
+              onSelectCell={handleHeatmapSelectCell}
+            />
+          </ErrorBoundary>
         </section>
 
       </main>

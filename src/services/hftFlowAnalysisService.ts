@@ -1,4 +1,4 @@
-import { TimesAndTradeRow } from '../types/orderFlowTypes';
+import { TimesAndTradeRow, TimesAndTradesAiAnalysis, TapeEscalationDetail } from '../types/orderFlowTypes';
 
 export interface HftOrderBookSignal {
   signal: 'COMPRA' | 'VENDA' | 'NEUTRO';
@@ -64,9 +64,286 @@ export interface HftFlowAnalysisResult {
   fluidPriceRange: HftAnalysisPillar;
   highChurnLowDisplacementZone: HftAnalysisPillar;
   stopLossHuntAlert: HftAnalysisPillar;
+  sweepingMomentum?: HftAnalysisPillar;
+  tapeAiAnalysis?: TimesAndTradesAiAnalysis;
   orderBookReading: HftOrderBookReading;
   aiSynthesizedRecommendation: string;
 }
+
+/**
+ * IA DE TAPE READING & ANÁLISE DE AGRESSÃO NO TIME & TRADES
+ * 1. Analisa quando os compradores estão comprando mais caro (Varredura no Ask)
+ * 2. Analisa quando os vendedores estão vendendo mais barato (Varredura no Bid)
+ * 3. Cria o Gatilho de Execução: libera ordens estritamente se a agressão for a favor
+ */
+export function analyzeTimesAndTradesTapeAi(
+  symbol: string,
+  currentPrice: number,
+  trades: TimesAndTradeRow[] = []
+): TimesAndTradesAiAnalysis {
+  const sym = (symbol || 'SOL').toUpperCase();
+  const price = currentPrice > 0 ? currentPrice : 100;
+  const nowIso = new Date().toISOString();
+
+  if (!Array.isArray(trades) || trades.length === 0) {
+    const neutralGate = {
+      isLongAllowed: true,
+      isShortAllowed: true,
+      reasonLong: 'Sem dados recentes de Tape. Execução direta permitida por fallback.',
+      reasonShort: 'Sem dados recentes de Tape. Execução direta permitida por fallback.',
+      activeBiasMessage: 'Tape neutro / sem histórico.'
+    };
+    return {
+      symbol: sym,
+      timestamp: nowIso,
+      dominantAggression: 'NEUTRAL',
+      buyAggressionPct: 50,
+      sellAggressionPct: 50,
+      buyerEscalation: {
+        status: 'NEUTRO',
+        isActive: false,
+        consecutiveCount: 0,
+        startPrice: price,
+        currentPrice: price,
+        priceDifferenceUsd: 0,
+        priceDifferencePct: 0,
+        totalVolumeUsd: 0,
+        intensityScore: 0,
+        description: 'Aguardando fluxo no Time & Trades.',
+        aiDiagnosis: 'IA Tape Reading: Sem fluxo recente detectado.'
+      },
+      sellerEscalation: {
+        status: 'NEUTRO',
+        isActive: false,
+        consecutiveCount: 0,
+        startPrice: price,
+        currentPrice: price,
+        priceDifferenceUsd: 0,
+        priceDifferencePct: 0,
+        totalVolumeUsd: 0,
+        intensityScore: 0,
+        description: 'Aguardando fluxo no Time & Trades.',
+        aiDiagnosis: 'IA Tape Reading: Sem fluxo recente detectado.'
+      },
+      executionGate: neutralGate,
+      summaryAiInsight: 'Aguardando negociações no Tape para diagnóstico da IA.'
+    };
+  }
+
+  // Trades are sorted newest first (index 0 is newest)
+  // 1. Calculate Aggression Volume in the last 30 trades
+  const recentTrades = trades.slice(0, Math.min(30, trades.length));
+  let buyVolUsd = 0;
+  let sellVolUsd = 0;
+  for (const t of recentTrades) {
+    if (t.aggressor === 'BUY') buyVolUsd += (t.totalUsd || 100);
+    else sellVolUsd += (t.totalUsd || 100);
+  }
+  const totalVol = buyVolUsd + sellVolUsd || 1;
+  const buyAggressionPct = Math.round((buyVolUsd / totalVol) * 100);
+  const sellAggressionPct = 100 - buyAggressionPct;
+
+  // 2. IA Tape: Análise de Comprador Comprando Mais Caro (Buyer Price Escalation)
+  let buyerConsecutive = 0;
+  let buyerStartPrice = price;
+  let buyerCurrentPrice = price;
+  let buyerTotalVolUsd = 0;
+
+  // Inspect the top sequential buy trades
+  let idx = 0;
+  while (idx < trades.length && trades[idx].aggressor === 'BUY') {
+    const t = trades[idx];
+    buyerTotalVolUsd += (t.totalUsd || 0);
+    if (buyerConsecutive === 0) {
+      buyerCurrentPrice = t.price;
+    }
+    buyerStartPrice = t.price;
+    buyerConsecutive++;
+    
+    // Check if next older trade was lower in price (meaning price was climbing towards index 0)
+    if (idx + 1 < trades.length && trades[idx + 1].aggressor === 'BUY') {
+      if (trades[idx].price < trades[idx + 1].price) {
+        // Price was lower in newer trade -> sequence broken
+        break;
+      }
+    }
+    idx++;
+  }
+
+  const buyerDiffUsd = Number((buyerCurrentPrice - buyerStartPrice).toFixed(buyerCurrentPrice < 1 ? 6 : 4));
+  const buyerDiffPct = buyerStartPrice > 0 ? Number(((buyerDiffUsd / buyerStartPrice) * 100).toFixed(3)) : 0;
+  const isBuyerSweeping = (buyerConsecutive >= 3 && buyerDiffUsd >= 0) || (buyerConsecutive >= 2 && buyerDiffUsd > 0);
+  const isBuyerInitial = buyerConsecutive >= 2 && !isBuyerSweeping;
+
+  const buyerStatus: TapeEscalationDetail['status'] = isBuyerSweeping 
+    ? 'COMPRADOR_COMPRANDO_MAIS_CARO' 
+    : isBuyerInitial 
+    ? 'INICIO_VARREDURA' 
+    : 'NEUTRO';
+
+  const buyerIntensityScore = Math.min(100, Math.round((buyerConsecutive * 20) + (buyAggressionPct * 0.4)));
+
+  const buyerDiagnosis = isBuyerSweeping
+    ? `🤖 IA Tape Reading: SINALIZADO COMPRADOR COMPRANDO MAIS CARO! Agressores institucionais executaram ${buyerConsecutive} ordens consecutivas a mercado no Ask, elevando o preço de $${buyerStartPrice.toFixed(4)} para $${buyerCurrentPrice.toFixed(4)} (+${buyerDiffPct}% / +US$ ${buyerDiffUsd.toFixed(4)}). Compradores aceitando pagar mais caro pelo spread para garantir execução imediata.`
+    : isBuyerInitial
+    ? `🤖 IA Tape Reading: Início de absorção compradora no Ask com ${buyerConsecutive} compras consecutivas em valores superiores (+US$ ${buyerDiffUsd.toFixed(4)}).`
+    : `🤖 IA Tape Reading: Compradores operando sem varredura agressiva de preços mais altos no momento.`;
+
+  const buyerDescription = isBuyerSweeping
+    ? `Compradores pagando preços cada vez mais altos (de $${buyerStartPrice.toFixed(4)} para $${buyerCurrentPrice.toFixed(4)}). Agressão compradora forte.`
+    : `Aguardando compras sequenciais em valores mais caros.`;
+
+  // 3. IA Tape: Análise de Vendedor Vendendo Mais Barato (Seller Price Reduction)
+  let sellerConsecutive = 0;
+  let sellerStartPrice = price;
+  let sellerCurrentPrice = price;
+  let sellerTotalVolUsd = 0;
+
+  idx = 0;
+  while (idx < trades.length && trades[idx].aggressor === 'SELL') {
+    const t = trades[idx];
+    sellerTotalVolUsd += (t.totalUsd || 0);
+    if (sellerConsecutive === 0) {
+      sellerCurrentPrice = t.price;
+    }
+    sellerStartPrice = t.price;
+    sellerConsecutive++;
+    
+    // Check if next older trade was higher in price (meaning price was dropping towards index 0)
+    if (idx + 1 < trades.length && trades[idx + 1].aggressor === 'SELL') {
+      if (trades[idx].price > trades[idx + 1].price) {
+        // Price was higher in newer trade -> sequence broken
+        break;
+      }
+    }
+    idx++;
+  }
+
+  const sellerDiffUsd = Number((sellerStartPrice - sellerCurrentPrice).toFixed(sellerCurrentPrice < 1 ? 6 : 4));
+  const sellerDiffPct = sellerStartPrice > 0 ? Number(((sellerDiffUsd / sellerStartPrice) * 100).toFixed(3)) : 0;
+  const isSellerSweeping = (sellerConsecutive >= 3 && sellerDiffUsd >= 0) || (sellerConsecutive >= 2 && sellerDiffUsd > 0);
+  const isSellerInitial = sellerConsecutive >= 2 && !isSellerSweeping;
+
+  const sellerStatus: TapeEscalationDetail['status'] = isSellerSweeping 
+    ? 'VENDEDOR_VENDENDO_MAIS_BARATO' 
+    : isSellerInitial 
+    ? 'INICIO_VARREDURA' 
+    : 'NEUTRO';
+
+  const sellerIntensityScore = Math.min(100, Math.round((sellerConsecutive * 20) + (sellAggressionPct * 0.4)));
+
+  const sellerDiagnosis = isSellerSweeping
+    ? `🤖 IA Tape Reading: SINALIZADO VENDEDOR VENDENDO MAIS BARATO! Agressores institucionais executaram ${sellerConsecutive} ordens consecutivas a mercado no Bid, derrubando o preço de $${sellerStartPrice.toFixed(4)} para $${sellerCurrentPrice.toFixed(4)} (-${sellerDiffPct}% / -US$ ${sellerDiffUsd.toFixed(4)}). Vendedores aceitando vender mais barato para liquidar contratos com urgência.`
+    : isSellerInitial
+    ? `🤖 IA Tape Reading: Início de pressão vendedora no Bid com ${sellerConsecutive} vendas consecutivas em valores inferiores (-US$ ${sellerDiffUsd.toFixed(4)}).`
+    : `🤖 IA Tape Reading: Vendedores operando sem varredura agressiva de preços mais baixos no momento.`;
+
+  const sellerDescription = isSellerSweeping
+    ? `Vendedores aceitando preços cada vez mais baixos (de $${sellerStartPrice.toFixed(4)} para $${sellerCurrentPrice.toFixed(4)}). Agressão vendedora forte.`
+    : `Aguardando vendas sequenciais em valores mais baratos.`;
+
+  // 4. Dominant Aggression Assessment
+  let dominantAggression: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  if (isBuyerSweeping || (buyAggressionPct >= 54 && !isSellerSweeping)) {
+    dominantAggression = 'BUY';
+  } else if (isSellerSweeping || (sellAggressionPct >= 54 && !isBuyerSweeping)) {
+    dominantAggression = 'SELL';
+  } else if (buyAggressionPct >= 51) {
+    dominantAggression = 'BUY';
+  } else if (sellAggressionPct >= 51) {
+    dominantAggression = 'SELL';
+  }
+
+  // 5. GATILHO DE EXECUÇÃO: LIBERAR ORDEM SOMENTE SE AGRESSÃO FOR A FAVOR
+  // - Ordem LONG (Compra): Liberada somente se a agressão for compradora (comprador comprando mais caro ou compra dominante). Bloqueada se vendedor estiver vendendo mais barato.
+  // - Ordem SHORT (Venda): Liberada somente se a agressão for vendedora (vendedor vendendo mais barato ou venda dominante). Bloqueada se comprador estiver comprando mais caro.
+  let isLongAllowed = false;
+  let reasonLong = '';
+  if (isBuyerSweeping) {
+    isLongAllowed = true;
+    reasonLong = `🟢 GATILHO COMPRADOR OK: Compradores comprovadamente comprando mais caro no Ask (+US$ ${buyerDiffUsd.toFixed(4)}). Agressão 100% a favor da Compra!`;
+  } else if (isSellerSweeping) {
+    isLongAllowed = false;
+    reasonLong = `🔴 GATILHO COMPRADOR BLOQUEADO: Vendedores estão vendendo mais barato no Bid (-US$ ${sellerDiffUsd.toFixed(4)}). Agressão está contrária à Compra!`;
+  } else if (buyAggressionPct >= 50) {
+    isLongAllowed = true;
+    reasonLong = `🟢 GATILHO COMPRADOR OK: Volume de agressão compradora no Tape (${buyAggressionPct}%) é favorável à Compra.`;
+  } else {
+    isLongAllowed = false;
+    reasonLong = `⏸️ GATILHO COMPRADOR BLOQUEADO: Agressão no Tape é desfavorável (${sellAggressionPct}% venda). Aguardando compradores comprarem mais caro.`;
+  }
+
+  let isShortAllowed = false;
+  let reasonShort = '';
+  if (isSellerSweeping) {
+    isShortAllowed = true;
+    reasonShort = `🔴 GATILHO VENDEDOR OK: Vendedores comprovadamente vendendo mais barato no Bid (-US$ ${sellerDiffUsd.toFixed(4)}). Agressão 100% a favor da Venda!`;
+  } else if (isBuyerSweeping) {
+    isShortAllowed = false;
+    reasonShort = `🟢 GATILHO VENDEDOR BLOQUEADO: Compradores estão comprando mais caro no Ask (+US$ ${buyerDiffUsd.toFixed(4)}). Agressão está contrária à Venda!`;
+  } else if (sellAggressionPct >= 50) {
+    isShortAllowed = true;
+    reasonShort = `🔴 GATILHO VENDEDOR OK: Volume de agressão vendedora no Tape (${sellAggressionPct}%) é favorável à Venda.`;
+  } else {
+    isShortAllowed = false;
+    reasonShort = `⏸️ GATILHO VENDEDOR BLOQUEADO: Agressão no Tape é desfavorável (${buyAggressionPct}% compra). Aguardando vendedores venderem mais barato.`;
+  }
+
+  const activeBiasMessage = isBuyerSweeping
+    ? `🟢 Fluxo de Alta Ativo: Compradores pagando mais caro (+US$ ${buyerDiffUsd.toFixed(4)})`
+    : isSellerSweeping
+    ? `🔴 Fluxo de Baixa Ativo: Vendedores vendendo mais barato (-US$ ${sellerDiffUsd.toFixed(4)})`
+    : `⚪ Fluxo em Equilíbrio (${buyAggressionPct}% Compra / ${sellAggressionPct}% Venda)`;
+
+  const summaryAiInsight = isBuyerSweeping
+    ? `IA Tape Reading: Agressão institucional compradora dominante com avanço progressivo de preços no Ask. Condição ideal para abertura de ordens LONG com gatilho a favor.`
+    : isSellerSweeping
+    ? `IA Tape Reading: Agressão institucional vendedora dominante com recuo progressivo de preços no Bid. Condição ideal para abertura de ordens SHORT com gatilho a favor.`
+    : `IA Tape Reading: Mercado oscilando com agressões divididas. O gatilho de execução protege a entrada aguardando direcionamento claro do fluxo.`;
+
+  return {
+    symbol: sym,
+    timestamp: nowIso,
+    dominantAggression,
+    buyAggressionPct,
+    sellAggressionPct,
+    buyerEscalation: {
+      status: buyerStatus,
+      isActive: isBuyerSweeping,
+      consecutiveCount: buyerConsecutive,
+      startPrice: buyerStartPrice,
+      currentPrice: buyerCurrentPrice,
+      priceDifferenceUsd: buyerDiffUsd,
+      priceDifferencePct: buyerDiffPct,
+      totalVolumeUsd: buyerTotalVolUsd,
+      intensityScore: buyerIntensityScore,
+      description: buyerDescription,
+      aiDiagnosis: buyerDiagnosis
+    },
+    sellerEscalation: {
+      status: sellerStatus,
+      isActive: isSellerSweeping,
+      consecutiveCount: sellerConsecutive,
+      startPrice: sellerStartPrice,
+      currentPrice: sellerCurrentPrice,
+      priceDifferenceUsd: sellerDiffUsd,
+      priceDifferencePct: sellerDiffPct,
+      totalVolumeUsd: sellerTotalVolUsd,
+      intensityScore: sellerIntensityScore,
+      description: sellerDescription,
+      aiDiagnosis: sellerDiagnosis
+    },
+    executionGate: {
+      isLongAllowed,
+      isShortAllowed,
+      reasonLong,
+      reasonShort,
+      activeBiasMessage
+    },
+    summaryAiInsight
+  };
+}
+
 
 /**
  * High-performance deterministic mathematical HFT flow analyzer
@@ -221,6 +498,47 @@ export function generateLocalHftFlowAnalysis(
     stopDesc = `Grande bloco de ordens stop (vendas forçadas) mapeado logo abaixo do suporte principal de $${maxBidPrice.toFixed(maxBidPrice > 10 ? 2 : 4)}. A barreira de vendedores passivos ($${Math.round(maxAskVol / 1000)}k) favorece o recuo para acionar os stops (Long Squeeze).`;
   }
 
+  // 6.5. Sweeping Momentum (Rastreador de agressão sequencial direcional)
+  let sweepStatus = "NEUTRO";
+  let sweepValue = "Ausência de Varredura Direcional";
+  let sweepColor = "slate";
+  let sweepDesc = "Ordens sendo executadas sem deslocamento progressivo de preço (mercado em absorção ou equilíbrio).";
+
+  if (Array.isArray(trades) && trades.length >= 3) {
+    // We assume trades are sorted newest first (index 0 is newest)
+    const t1 = trades[0];
+    const t2 = trades[1];
+    const t3 = trades[2];
+
+    const isBuyerSweeping = t1.aggressor === 'BUY' && t2.aggressor === 'BUY' && t3.aggressor === 'BUY' && 
+                            t1.price > t2.price && t2.price > t3.price;
+                            
+    const isSellerSweeping = t1.aggressor === 'SELL' && t2.aggressor === 'SELL' && t3.aggressor === 'SELL' && 
+                             t1.price < t2.price && t2.price < t3.price;
+
+    if (isBuyerSweeping) {
+      sweepStatus = "VARREDURA_COMPRADORA";
+      sweepValue = "COMPRADOR COMPRANDO MAIS CARO";
+      sweepColor = "emerald";
+      sweepDesc = `Rastreador detectou ordens de compra sequenciais subindo o preço (de $${t3.price.toFixed(4)} para $${t1.price.toFixed(4)}). Compradores estão dispostos a pagar spread mais caro, varrendo a liquidez de venda. Gatilho Comprador HFT ativado.`;
+    } else if (isSellerSweeping) {
+      sweepStatus = "VARREDURA_VENDEDORA";
+      sweepValue = "VENDEDOR VENDENDO MAIS BARATO";
+      sweepColor = "rose";
+      sweepDesc = `Rastreador detectou ordens de venda sequenciais baixando o preço (de $${t3.price.toFixed(4)} para $${t1.price.toFixed(4)}). Vendedores estão agredindo a mercado cada vez mais barato, varrendo o suporte. Gatilho Vendedor HFT ativado.`;
+    } else if (t1.aggressor === 'BUY' && t2.aggressor === 'BUY' && t1.price > t2.price) {
+       sweepStatus = "VARREDURA_COMPRADORA_INICIO";
+       sweepValue = "INÍCIO DE VARREDURA (COMPRA)";
+       sweepColor = "emerald";
+       sweepDesc = `Compradores começando a pagar mais caro. Gatilho ativado.`;
+    } else if (t1.aggressor === 'SELL' && t2.aggressor === 'SELL' && t1.price < t2.price) {
+       sweepStatus = "VARREDURA_VENDEDORA_INICIO";
+       sweepValue = "INÍCIO DE VARREDURA (VENDA)";
+       sweepColor = "rose";
+       sweepDesc = `Vendedores começando a vender mais barato. Gatilho ativado.`;
+    }
+  }
+
   // 7. Structured Order Book Reading
   const isBookBullish = bidRatioPct >= 55 || easeValue.includes("LONG");
   const isBookBearish = askRatioPct >= 55 || easeValue.includes("SHORT");
@@ -342,6 +660,13 @@ export function generateLocalHftFlowAnalysis(
       description: stopDesc,
       color: stopColor
     },
+    sweepingMomentum: {
+      status: sweepStatus,
+      value: sweepValue,
+      description: sweepDesc,
+      color: sweepColor
+    },
+    tapeAiAnalysis: analyzeTimesAndTradesTapeAi(sym, price, trades),
     orderBookReading: {
       signal: orderBookSignal,
       support: orderBookSupport,

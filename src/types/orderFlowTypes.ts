@@ -154,6 +154,39 @@ export interface HftPillarDetail {
   color: string;
 }
 
+export interface TapeEscalationDetail {
+  status: 'COMPRADOR_COMPRANDO_MAIS_CARO' | 'VENDEDOR_VENDENDO_MAIS_BARATO' | 'INICIO_VARREDURA' | 'NEUTRO';
+  isActive: boolean;
+  consecutiveCount: number;
+  startPrice: number;
+  currentPrice: number;
+  priceDifferenceUsd: number;
+  priceDifferencePct: number;
+  totalVolumeUsd: number;
+  speedTradesPerSec?: number;
+  intensityScore: number; // 0-100%
+  description: string;
+  aiDiagnosis: string;
+}
+
+export interface TimesAndTradesAiAnalysis {
+  symbol: string;
+  timestamp: string;
+  dominantAggression: 'BUY' | 'SELL' | 'NEUTRAL';
+  buyAggressionPct: number;
+  sellAggressionPct: number;
+  buyerEscalation: TapeEscalationDetail; // Comprador comprando mais caro
+  sellerEscalation: TapeEscalationDetail; // Vendedor vendendo mais barato
+  executionGate: {
+    isLongAllowed: boolean;
+    isShortAllowed: boolean;
+    reasonLong: string;
+    reasonShort: string;
+    activeBiasMessage: string;
+  };
+  summaryAiInsight: string;
+}
+
 export interface HftFlowAnalysis {
   symbol: string;
   priceUsd: number;
@@ -163,7 +196,10 @@ export interface HftFlowAnalysis {
   fluidPriceRange: HftPillarDetail;
   highChurnLowDisplacementZone: HftPillarDetail;
   stopLossHuntAlert: HftPillarDetail;
+  sweepingMomentum?: HftPillarDetail;
+  tapeAiAnalysis?: TimesAndTradesAiAnalysis;
   orderBookReading?: OrderBookReading;
   aiSynthesizedRecommendation: string;
 }
+
 

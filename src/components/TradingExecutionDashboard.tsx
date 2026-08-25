@@ -1,19 +1,31 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
-  Play, Square, Crosshair, TrendingUp, TrendingDown, Clock, ShieldCheck,
+  Play, Square, Pause, Crosshair, TrendingUp, TrendingDown, Clock, ShieldCheck,
   AlertTriangle, DollarSign, Settings, History, CheckCircle2, ChevronRight, XCircle,
   RefreshCw, Terminal, Activity, Zap, Timer, Target, Sparkles, Filter, Check, ListOrdered,
-  ArrowUpRight, ArrowDownRight, Layers, Scale, BarChart3, ShieldAlert, Eye, ChevronDown, ChevronUp
+  ArrowUpRight, ArrowDownRight, Layers, Scale, BarChart3, ShieldAlert, Eye, ChevronDown, ChevronUp,
+  RotateCcw, Flame
 } from 'lucide-react';
 import { CryptoMention } from '../types';
-import { TradePosition, TradingAccount, AssetSelectionMode, PositionSide } from '../types/tradingTypes';
+import { 
+  TradePosition, 
+  TradingAccount, 
+  AssetSelectionMode, 
+  PositionSide,
+  ArmedOrderTrigger,
+  OrderTriggerMode
+} from '../types/tradingTypes';
 import { HighFrequencyConfluenceResult, Top10mProfitCrypto } from '../types/hftConfluenceTypes';
 import { 
   getTradingAccount, getPositions, saveTradingAccount, 
   clearTradingHistory, manuallyClosePosition, updateActivePositions,
   processConfluenceSignalForTrading, determineSignalSide, TRADING_ACCOUNT_EVENT,
   updateTargetProfit, updateTimeManagementSettings, updateTrailingStopSettings,
-  updateAssetSelectionMode, executeDirectTradeForCrypto
+  updateAssetSelectionMode, executeDirectTradeForCrypto, updateInvertedExecutionSettings,
+  updateAiDivergenceSettings, updateReentryCooldownSettings, updateAggressionTriggerSettings,
+  getArmedTriggers, armOrderTrigger, cancelArmedTrigger, clearArmedTriggers,
+  evaluateAndExecuteArmedTriggers, forceExecuteArmedTriggerImmediately,
+  armAllTop3ParetoTriggers, ARMED_TRIGGERS_EVENT
 } from '../services/tradingExecutionService';
 import { tradingSignalBus } from '../services/tradingSignalBus';
 import { generateLocalHFTConfluenceAnalysis, selectTop3HighProbabilityCryptos, evaluateAllCryptosForParetoAnalysis } from '../services/hftConfluenceService';
@@ -22,6 +34,7 @@ import { ParetoWinProbabilityChart } from './ParetoWinProbabilityChart';
 import { SingleCryptoTimesAndTrades } from './SingleCryptoTimesAndTrades';
 import { generateLiveOrderFlowData } from '../services/orderFlowDataService';
 import { generateScalpingAiAnalysis, ScalpingAiAnalysis } from '../services/scalpingAiService';
+import { analyzeTimesAndTradesTapeAi } from '../services/hftFlowAnalysisService';
 
 
 interface TradingExecutionDashboardProps {
@@ -104,6 +117,8 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     const tenMinCycle = 600;
     return tenMinCycle - (now % tenMinCycle);
   });
+  const [signalTick, setSignalTick] = useState<number>(0);
+  const [isParetoCyclePaused, setIsParetoCyclePaused] = useState<boolean>(false);
 
   const [logs, setLogs] = useState<RobotLogEntry[]>([
     {
@@ -116,7 +131,29 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
 
   const [logFilter, setLogFilter] = useState<'ALL' | 'ORDERS' | 'INFO' | 'WARNING'>('ALL');
   const [triggerTabFilter, setTriggerTabFilter] = useState<'ALL' | 'PENDING' | 'READY' | 'ACTIVE'>('ALL');
+  const [triggerStatusFilter, setTriggerStatusFilter] = useState<'ALL' | 'ARMED' | 'TRIGGERED' | 'CANCELLED'>('ALL');
+  const [expandedTriggerId, setExpandedTriggerId] = useState<string | null>(null);
   const [expandedTriggerSymbol, setExpandedTriggerSymbol] = useState<string | null>(null);
+
+  // Armed Order Triggers State
+  const [armedTriggers, setArmedTriggers] = useState<ArmedOrderTrigger[]>(() => getArmedTriggers());
+  const [quickArmSymbol, setQuickArmSymbol] = useState<string>(cryptos[0]?.symbol || 'BTC');
+  const [quickArmSide, setQuickArmSide] = useState<PositionSide>('LONG');
+  const [quickArmSizeUsd, setQuickArmSizeUsd] = useState<number>(100);
+  const [quickArmLeverage, setQuickArmLeverage] = useState<number>(5);
+  const [quickArmTriggerMode, setQuickArmTriggerMode] = useState<OrderTriggerMode>('INSTANT_AGGRESSION');
+  const [quickArmMinVolume, setQuickArmMinVolume] = useState<number>(2500);
+  const [quickArmAutoRearm, setQuickArmAutoRearm] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleArmedUpdate = () => {
+      setArmedTriggers(getArmedTriggers());
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener(ARMED_TRIGGERS_EVENT, handleArmedUpdate);
+      return () => window.removeEventListener(ARMED_TRIGGERS_EVENT, handleArmedUpdate);
+    }
+  }, []);
 
   const filteredLogs = useMemo(() => {
     if (logFilter === 'ALL') return logs;
@@ -270,27 +307,86 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       const check2_ConfluenceScore = item.confluenceScore >= requiredConfluenceScore;
       const check3_BookAndAbsorption = !isAbsorption;
       const check4_CapacityAndMargin = hasAvailableSlot && hasAvailableMargin;
-      const check5_AutoTradingOn = account.isAutoTradingEnabled;
+      
+      let check5_AntiTrap = true;
+      let trapReason = '';
+      const proximityThreshold = 0.005;
+      if (side === 'LONG' && resPrice > spotPrice) {
+        const dist = (resPrice - spotPrice) / spotPrice;
+        if (dist < proximityThreshold) {
+          check5_AntiTrap = false;
+          trapReason = `A < 0.5% da resistência (US$ ${resPrice.toFixed(4)})`;
+        }
+      }
+      if (side === 'SHORT' && supPrice > 0 && spotPrice > supPrice) {
+        const dist = (spotPrice - supPrice) / spotPrice;
+        if (dist < proximityThreshold) {
+          check5_AntiTrap = false;
+          trapReason = `A < 0.5% do suporte (US$ ${supPrice.toFixed(4)})`;
+        }
+      }
+
+      // Check 6: HFT Capital Flow Imbalance (IA de Alto Fluxo - Posicionamento no lado com maior dinheiro entrando)
+      const bidRatio = savedHft?.orderBookReading?.imbalance?.bidRatioPct ?? 52;
+      const askRatio = savedHft?.orderBookReading?.imbalance?.askRatioPct ?? (100 - bidRatio);
+      const totalCapitalUsd = cryptoObj?.volume24hUsd ? (cryptoObj.volume24hUsd / 1440) * 10 : 250000;
+      const buyCapitalInflowUsd = totalCapitalUsd * (bidRatio / 100);
+      const sellCapitalInflowUsd = totalCapitalUsd * (askRatio / 100);
+      const capitalDominantSide: PositionSide = bidRatio >= askRatio ? 'LONG' : 'SHORT';
+      const capitalImbalanceDelta = Math.abs(bidRatio - askRatio);
+
+      const check6_CapitalImbalance = side === capitalDominantSide;
+      let capitalImbalanceReason = '';
+      if (!check6_CapitalImbalance) {
+        capitalImbalanceReason = `Fluxo divergente: Ordem em ${side}, mas o capital dominante é ${capitalDominantSide} (${capitalDominantSide === 'LONG' ? bidRatio.toFixed(1) : askRatio.toFixed(1)}%). Bloqueado.`;
+      }
+
+      // Check 7: HFT Price Displacement / Movement (IA de Alto Fluxo - Análise de Deslocamento de Preço)
+      const sparkline = cryptoObj?.sparklineData || [];
+      const sparklineMin = sparkline.length ? Math.min(...sparkline) : spotPrice;
+      const sparklineMax = sparkline.length ? Math.max(...sparkline) : spotPrice;
+      const sparklineRangePct = sparklineMin > 0 ? ((sparklineMax - sparklineMin) / sparklineMin) * 100 : 0.05;
+      const isPriceMoving = sparklineRangePct >= 0.02; // Active price displacement threshold
+      const check7_PriceDisplacement = isPriceMoving;
+      let priceDisplacementReason = '';
+      if (!check7_PriceDisplacement) {
+        priceDisplacementReason = `Preço lateralizado/travado (Variação de range ${sparklineRangePct.toFixed(3)}% < 0.02%). Sem deslocamento para liberar ordem.`;
+      }
+
+      // Check 8: Gatilho de Agressão Ativa no Time & Trades / Sweep de Fita em Tempo Real (Resiliência & Quota-Zero)
+      const flowData = generateLiveOrderFlowData(cryptoObj || ({ symbol: item.symbol, name: item.name, priceUsd: spotPrice, change24h: 0 } as any));
+      const tapeAiResult = analyzeTimesAndTradesTapeAi(item.symbol, spotPrice, flowData.timesAndTrades);
+      const check8_TapeAggression = side === 'LONG' ? tapeAiResult.executionGate.isLongAllowed : tapeAiResult.executionGate.isShortAllowed;
+      const tapeAggressionReason = side === 'LONG' ? tapeAiResult.executionGate.reasonLong : tapeAiResult.executionGate.reasonShort;
+      const tapeBuyAggressionPct = tapeAiResult.buyAggressionPct;
+      const tapeSellAggressionPct = tapeAiResult.sellAggressionPct;
+      const isSweepingActive = side === 'LONG' ? tapeAiResult.buyerEscalation.isActive : tapeAiResult.sellerEscalation.isActive;
+
+      const check9_AutoTradingOn = account.isAutoTradingEnabled;
 
       const checksMetCount = (check1_DuplaChancela ? 1 : 0) + 
                              (check2_ConfluenceScore ? 1 : 0) + 
                              (check3_BookAndAbsorption ? 1 : 0) + 
-                             (check4_CapacityAndMargin ? 1 : 0);
+                             (check4_CapacityAndMargin ? 1 : 0) +
+                             (check5_AntiTrap ? 1 : 0) +
+                             (check6_CapitalImbalance ? 1 : 0) +
+                             (check7_PriceDisplacement ? 1 : 0) +
+                             (check8_TapeAggression ? 1 : 0);
 
-      const readinessPct = Math.round((checksMetCount / 4) * 100);
+      const readinessPct = Math.round((checksMetCount / 8) * 100);
 
       let status: 'ACTIVE' | 'READY' | 'PENDING' = 'PENDING';
       if (openPos) {
         status = 'ACTIVE';
-      } else if (checksMetCount === 4 && check5_AutoTradingOn && isMomentumFavorable) {
+      } else if (checksMetCount === 8 && check9_AutoTradingOn && isMomentumFavorable) {
         status = 'READY';
       } else {
         status = 'PENDING';
       }
 
-      const pendingItems: { title: string; desc: string; type: 'dupla' | 'confluence' | 'book' | 'capacity' | 'trading_off' | 'momentum' }[] = [];
+      const pendingItems: { title: string; desc: string; type: 'dupla' | 'confluence' | 'book' | 'capacity' | 'trading_off' | 'momentum' | 'antitrap' | 'capital' | 'displacement' | 'sweeping' }[] = [];
       
-      if (!check5_AutoTradingOn && !openPos) {
+      if (!check9_AutoTradingOn && !openPos) {
         pendingItems.push({
           title: 'Auto-Trader Pausado',
           desc: 'Clique em INICIAR ROBO para liberar a execução autônoma.',
@@ -316,6 +412,34 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           title: 'Zona de Absorção Institucional (No-Trade)',
           desc: `Preço atual está dentro de faixa de alto churn/absorção (${absorptionReason}).`,
           type: 'book'
+        });
+      }
+      if (!check5_AntiTrap) {
+        pendingItems.push({
+          title: 'Filtro Anti-Armadilha (Sinc. Book)',
+          desc: trapReason,
+          type: 'antitrap'
+        });
+      }
+      if (!check6_CapitalImbalance) {
+        pendingItems.push({
+          title: 'Desbalanço de Capital Adverso (IA Alto Fluxo)',
+          desc: capitalImbalanceReason,
+          type: 'capital'
+        });
+      }
+      if (!check7_PriceDisplacement) {
+        pendingItems.push({
+          title: 'Sem Deslocamento de Preço (Mercado Travado)',
+          desc: priceDisplacementReason,
+          type: 'displacement'
+        });
+      }
+      if (!check8_TapeAggression) {
+        pendingItems.push({
+          title: 'Agressão Desfavorável no Time & Trades (Tape HFT)',
+          desc: tapeAggressionReason,
+          type: 'sweeping'
         });
       }
       if (!hasAvailableSlot) {
@@ -350,7 +474,20 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         check2_ConfluenceScore,
         check3_BookAndAbsorption,
         check4_CapacityAndMargin,
-        check5_AutoTradingOn,
+        check5_AntiTrap,
+        check6_CapitalImbalance,
+        check7_PriceDisplacement,
+        check8_TapeAggression,
+        tapeBuyAggressionPct,
+        tapeSellAggressionPct,
+        isSweepingActive,
+        tapeAggressionReason,
+        check9_AutoTradingOn,
+        buyCapitalInflowUsd,
+        sellCapitalInflowUsd,
+        capitalDominantSide,
+        capitalImbalanceDelta,
+        sparklineRangePct,
         checksMetCount,
         readinessPct,
         status,
@@ -358,7 +495,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         requiredConfluenceScore
       };
     });
-  }, [account.assetSelectionMode, account.selectedSymbols, account.availableMarginUsd, account.isAutoTradingEnabled, top3Cryptos, allParetoCryptos, cryptos, positions, liveBtcPonderado, scalpingAnalysis, adminOverrideActive]);
+  }, [account.assetSelectionMode, account.selectedSymbols, account.availableMarginUsd, account.isAutoTradingEnabled, top3Cryptos, allParetoCryptos, cryptos, positions, liveBtcPonderado, scalpingAnalysis, adminOverrideActive, signalTick]);
 
   // Use a ref to keep the latest state for event listeners
   const stateRef = useRef({ account, positions, cryptos, top3Cryptos, adminOverrideActive, scalpingAnalysis });
@@ -368,11 +505,12 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
 
   // 10-minute cycle ticker
   useEffect(() => {
+    if (isParetoCyclePaused) return;
     const timer = setInterval(() => {
       setCycleTimeRemainingSec(prev => (prev <= 1 ? 600 : prev - 1));
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isParetoCyclePaused]);
 
   const formattedCycleTime = useMemo(() => {
     const m = Math.floor(cycleTimeRemainingSec / 60);
@@ -391,6 +529,63 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       ...prev.slice(0, 19)
     ]);
   }, []);
+
+  const handleArmTrigger = useCallback((
+    symbol: string, 
+    targetSide: PositionSide, 
+    sizeUsd: number = 100, 
+    leverage: number = 5,
+    triggerMode: OrderTriggerMode = 'INSTANT_AGGRESSION',
+    minAggressionVolumeUsd: number = 2500,
+    autoRearmOnClose: boolean = false
+  ) => {
+    const cryptoObj = cryptos.find(c => c.symbol === symbol);
+    const res = armOrderTrigger({
+      symbol,
+      coinName: cryptoObj?.name || symbol,
+      targetSide,
+      sizeUsd,
+      leverage,
+      triggerMode,
+      minAggressionVolumeUsd,
+      autoRearmOnClose,
+      reason: `Gatilho de Emissão Inteligente por Agressão na Fita (${triggerMode})`
+    });
+    setArmedTriggers(getArmedTriggers());
+    addLog(res.success ? 'INFO' : 'WARNING', res.log);
+  }, [cryptos, addLog]);
+
+  const handleForceTriggerImmediately = useCallback((triggerId: string) => {
+    const res = forceExecuteArmedTriggerImmediately(triggerId, cryptos);
+    setArmedTriggers(getArmedTriggers());
+    setPositions(getPositions());
+    setAccount(getTradingAccount());
+    addLog(res.success ? 'ORDER_OPEN' : 'WARNING', res.log);
+  }, [cryptos, addLog]);
+
+  const handleArmTop3Pareto = useCallback(() => {
+    const candidates = top3Cryptos.map(t => ({
+      symbol: t.symbol,
+      name: t.name,
+      recommendedAction: t.recommendedAction
+    }));
+    const res = armAllTop3ParetoTriggers(cryptos, candidates, quickArmSizeUsd, quickArmLeverage, quickArmTriggerMode);
+    setArmedTriggers(getArmedTriggers());
+    res.logs.forEach(l => addLog('INFO', l));
+    addLog('INFO', `⚡ ${res.countArmed} gatilhos de emissão armados simultaneamente para a Cesta Top 3 Pareto!`);
+  }, [cryptos, top3Cryptos, quickArmSizeUsd, quickArmLeverage, quickArmTriggerMode, addLog]);
+
+  const handleCancelTrigger = useCallback((triggerId: string) => {
+    const res = cancelArmedTrigger(triggerId);
+    setArmedTriggers(getArmedTriggers());
+    addLog('INFO', res.log);
+  }, [addLog]);
+
+  const handleClearAllTriggers = useCallback(() => {
+    clearArmedTriggers();
+    setArmedTriggers([]);
+    addLog('INFO', 'Todos os gatilhos armados foram cancelados.');
+  }, [addLog]);
 
   // Premium Microstructural verification function based on HFT AI Flow Analyzer
   const verifyHftAiRecommendations = useCallback((symbol: string, currentPrice: number, side: PositionSide) => {
@@ -567,7 +762,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       if (res.tradeOpened) {
         setAccount({ ...res.account });
         setPositions([ ...res.positions ]);
-        addLog('ORDER_OPEN', `⚡ Disparo Automático Imediato: 4/4 Verificações 100% Satisfeitas em ${item.symbol} (${item.side === 'LONG' ? 'COMPRA' : 'VENDA'})! Entrada a mercado em US$ ${entryPrice > 10 ? entryPrice.toFixed(2) : entryPrice.toFixed(4)}.`);
+        addLog('ORDER_OPEN', `⚡ Disparo Automático Imediato: 8/8 Verificações 100% Satisfeitas em ${item.symbol} (${item.side === 'LONG' ? 'COMPRA' : 'VENDA'})! Entrada a mercado em US$ ${entryPrice > 10 ? entryPrice.toFixed(2) : entryPrice.toFixed(4)}.`);
       }
     } catch (err) {
       console.error("Erro ao executar disparo imediato de gatilho:", err);
@@ -578,348 +773,14 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     }
   }, [addLog, verifyHftAiRecommendations]);
 
-  // Execution engine: evaluates a signal for a coin
-  const executeSignalIfEligible = useCallback((signal: HighFrequencyConfluenceResult, currentPrice: number) => {
-    const currentAcc = getTradingAccount();
-    const currentPos = getPositions();
-
-    if (!currentAcc.isAutoTradingEnabled) return;
-
-    const { adminOverrideActive: override, scalpingAnalysis: currentAnalysis } = stateRef.current;
-    
-    // Check if symbol is allowed by current asset selection mode
-    const mode = currentAcc.assetSelectionMode || 'TOP_3_PROBABILITY';
-    if (mode === 'TOP_3_PROBABILITY') {
-      const top3Symbols = stateRef.current.top3Cryptos.map(t => t.symbol);
-      if (!top3Symbols.includes(signal.symbol)) return;
-
-      if (currentPos.some(p => p.status === 'OPEN' && p.symbol === signal.symbol)) return;
-
-      const topItem = stateRef.current.top3Cryptos.find(t => t.symbol === signal.symbol);
-      if (!topItem) return;
-
-      // Strictly compute BTC's Status de Compra & Venda Ponderado (Distribuição Manual)
-      const btcObj = stateRef.current.cryptos.find(c => c.symbol === 'BTC');
-      let btcMasterWeightedScore = 50;
-
-      if (btcObj) {
-        const btcFlow = generateLiveOrderFlowData(btcObj);
-        const btcSignal = generateLocalHFTConfluenceAnalysis(btcObj, btcFlow);
-
-        let weightLayer1And2 = 14;
-        let weightTechnical = 86;
-        if (typeof window !== 'undefined' && window.localStorage) {
-          const savedLayer = window.localStorage.getItem('hft_decision_weight_layer_1_2');
-          const savedTech = window.localStorage.getItem('hft_decision_weight_tech');
-          if (savedLayer !== null) weightLayer1And2 = parseInt(savedLayer, 10);
-          if (savedTech !== null) weightTechnical = parseInt(savedTech, 10);
-        }
-
-        const layer1And2Score = Math.round((btcSignal.primaryAnalysis.overallPrimaryScore + btcSignal.confluenceScorePct) / 2);
-        const technicalScore = btcSignal.technicalScoreSummary?.overallScore ?? btcSignal.primaryAnalysis?.pillars?.technicalIndicators?.score ?? 50;
-        btcMasterWeightedScore = Math.round(
-          layer1And2Score * (weightLayer1And2 / 100) + technicalScore * (weightTechnical / 100)
-        );
-      }
-
-      const btcPonderadoSide: PositionSide = btcMasterWeightedScore >= 50 ? 'LONG' : 'SHORT';
-
-      // 1. Determine recommended action side from Top 3 Criptomoedas (Ciclo 10min)
-      let top3Side: PositionSide | null = null;
-      if (topItem.recommendedAction.includes('COMPRA') || topItem.recommendedAction.includes('LONG')) {
-        top3Side = 'LONG';
-      } else if (topItem.recommendedAction.includes('VENDA') || topItem.recommendedAction.includes('SHORT')) {
-        top3Side = 'SHORT';
-      } else {
-        top3Side = determineSignalSide(signal);
-      }
-
-      // 2. Dupla Chancela: Se o sinal da moeda no Top 3 estiver alinhado com o BTC Ponderado -> LIBERADO!
-      if (!top3Side || top3Side !== btcPonderadoSide) return;
-
-      // 3. Verify HFT AI recommendations before order entry
-      const hftVerify = verifyHftAiRecommendations(signal.symbol, currentPrice, top3Side);
-      if (!hftVerify.isEligible) {
-        addLog('WARNING', `🤖 Auto-Trader suspendeu ordem Top 3 em ${signal.symbol}: ${hftVerify.reason}`);
-        return;
-      }
-
-      if (hftVerify.stopLoss) {
-        if (!signal.executionPlan) signal.executionPlan = {} as any;
-        signal.executionPlan.stopLoss = hftVerify.stopLoss;
-        addLog('INFO', `🛡️ Ajuste HFT Stop Loss inteligente acionado para ${signal.symbol} em US$ ${hftVerify.stopLoss.toFixed(2)} abaixo do suporte de volume.`);
-      }
-
-      if (hftVerify.takeProfit) {
-        if (!signal.executionPlan) signal.executionPlan = {} as any;
-        signal.executionPlan.takeProfit1 = hftVerify.takeProfit;
-        addLog('INFO', `🎯 Ajuste HFT Take Profit cirúrgico acionado para ${signal.symbol} em US$ ${hftVerify.takeProfit.toFixed(2)}.`);
-      }
-
-      addLog('INFO', `🎯 Dupla Chancela Confirmada para ${signal.symbol}: Sinal Top 3 (${top3Side}) alinhado com BTC Ponderado (${btcPonderadoSide} [Score: ${btcMasterWeightedScore}/100]). Executando entrada imediata.`);
-
-      // Pass bypassFilters as true because Dupla Chancela is fully verified!
-      const res = processConfluenceSignalForTrading(signal, currentPrice, currentAcc, currentPos, top3Side, true);
-      if (res.tradeOpened) {
-        setAccount({ ...res.account });
-        setPositions([ ...res.positions ]);
-        addLog('ORDER_OPEN', `⚡ Auto-Trader executou ${top3Side} no Rank #${topItem.rank} (${signal.symbol}) via Dupla Chancela Liberada [${topItem.winProbabilityPct}% Prob.].`);
-      }
-    } else {
-      // Safety Net for non-Top 3 modes
-      if (!currentAnalysis.isFavorable && !override) {
-        return;
-      }
-
-      if (mode === 'CUSTOM') {
-        const allowed = currentAcc.selectedSymbols || [];
-        if (!allowed.includes(signal.symbol)) return;
-      }
-
-      const side = determineSignalSide(signal);
-      if (side) {
-        const hftVerify = verifyHftAiRecommendations(signal.symbol, currentPrice, side);
-        if (!hftVerify.isEligible) {
-          addLog('WARNING', `🤖 Auto-Trader suspendeu ordem em ${signal.symbol}: ${hftVerify.reason}`);
-          return;
-        }
-        if (hftVerify.stopLoss) {
-          if (!signal.executionPlan) signal.executionPlan = {} as any;
-          signal.executionPlan.stopLoss = hftVerify.stopLoss;
-        }
-        if (hftVerify.takeProfit) {
-          if (!signal.executionPlan) signal.executionPlan = {} as any;
-          signal.executionPlan.takeProfit1 = hftVerify.takeProfit;
-        }
-      }
-
-      const res = processConfluenceSignalForTrading(signal, currentPrice, currentAcc, currentPos);
-      
-      if (res.tradeOpened) {
-        addLog('ORDER_OPEN', res.log);
-        setAccount({ ...res.account });
-        setPositions([ ...res.positions ]);
-      }
-    }
-  }, [addLog]);
-
   // Full market scanner function
   const runMarketScan = useCallback((forced: boolean = false) => {
-    const currentCryptos = stateRef.current.cryptos;
-    const currentTop3 = stateRef.current.top3Cryptos;
-    const currentAcc = getTradingAccount();
-    const currentPos = getPositions();
-
-    if (!currentAcc.isAutoTradingEnabled && !forced) return;
-
-    const { adminOverrideActive: override, scalpingAnalysis: currentAnalysis } = stateRef.current;
-    
-    // Safety Net: Se o ambiente não for favorável e o operador não deu override manual (aplica para modos gerais)
-    const mode = currentAcc.assetSelectionMode || 'TOP_3_PROBABILITY';
-    if (mode !== 'TOP_3_PROBABILITY' && !currentAnalysis.isFavorable && !override) {
-      const now = Date.now();
-      if (now - lastUnfavorableLogRef.current > 60000 || forced) { // Log once a minute to avoid spam, or immediately if user clicked 'Scan'
-        addLog('WARNING', `Auto-Trader bloqueado: Indicador IA aponta Divergência/Baixa Liquidez (${currentAnalysis.score}/100). Só será permitido entrada de novas ordens com Override ADM ou quando indicador liberar.`);
-        lastUnfavorableLogRef.current = now;
-      }
-      setIsScanningNow(false);
-      return;
+    if (forced) {
+      addLog('SCAN', `Varredura de mercado solicitada...`);
+      setSignalTick(Date.now());
+      setIsScanningNow(true);
+      setTimeout(() => setIsScanningNow(false), 500);
     }
-
-    setIsScanningNow(true);
-    let tempAcc = currentAcc;
-    let tempPos = currentPos;
-    let openedCount = 0;
-
-    const openPosCount = tempPos.filter(p => p.status === 'OPEN').length;
-    
-    if (openPosCount >= 3) {
-      if (forced) {
-        addLog('WARNING', 'Varredura finalizada: Limite máximo de 3 posições abertas já atingido.');
-      }
-      setIsScanningNow(false);
-      return;
-    }
-
-    if (mode === 'TOP_3_PROBABILITY') {
-      // Strictly compute BTC's Status de Compra & Venda Ponderado (Distribuição Manual)
-      const btcObj = currentCryptos.find(c => c.symbol === 'BTC');
-      let btcMasterWeightedScore = 50;
-
-      if (btcObj) {
-        const btcFlow = generateLiveOrderFlowData(btcObj);
-        const btcSignal = generateLocalHFTConfluenceAnalysis(btcObj, btcFlow);
-
-        let weightLayer1And2 = 14;
-        let weightTechnical = 86;
-        if (typeof window !== 'undefined' && window.localStorage) {
-          const savedLayer = window.localStorage.getItem('hft_decision_weight_layer_1_2');
-          const savedTech = window.localStorage.getItem('hft_decision_weight_tech');
-          if (savedLayer !== null) weightLayer1And2 = parseInt(savedLayer, 10);
-          if (savedTech !== null) weightTechnical = parseInt(savedTech, 10);
-        }
-
-        const layer1And2Score = Math.round((btcSignal.primaryAnalysis.overallPrimaryScore + btcSignal.confluenceScorePct) / 2);
-        const technicalScore = btcSignal.technicalScoreSummary?.overallScore ?? btcSignal.primaryAnalysis?.pillars?.technicalIndicators?.score ?? 50;
-        btcMasterWeightedScore = Math.round(
-          layer1And2Score * (weightLayer1And2 / 100) + technicalScore * (weightTechnical / 100)
-        );
-      }
-
-      const btcPonderadoSide: PositionSide = btcMasterWeightedScore >= 50 ? 'LONG' : 'SHORT';
-
-      // Scan Top 3 Cryptos: Any coin with Dupla Chancela Alignment is LIBERATED to open immediately!
-      for (const topItem of currentTop3) {
-        if (tempPos.some(p => p.status === 'OPEN' && p.symbol === topItem.symbol)) continue;
-
-        const cryptoObj = currentCryptos.find(c => c.symbol === topItem.symbol);
-        if (!cryptoObj) continue;
-
-        // 1. Determine recommended action side from Top 3 Criptomoedas (Ciclo 10min)
-        let top3Side: PositionSide | null = null;
-        if (topItem.recommendedAction.includes('COMPRA') || topItem.recommendedAction.includes('LONG')) {
-          top3Side = 'LONG';
-        } else if (topItem.recommendedAction.includes('VENDA') || topItem.recommendedAction.includes('SHORT')) {
-          top3Side = 'SHORT';
-        }
-
-        // 2. Dupla Chancela check:
-        if (!top3Side || top3Side !== btcPonderadoSide) {
-          if (forced) {
-            addLog('INFO', `⚠️ Dupla Chancela Aguardando para ${topItem.symbol}: Top 3 recomenda (${top3Side || 'NEUTRO'}) mas BTC Ponderado indica (${btcPonderadoSide}) [Score BTC: ${btcMasterWeightedScore}].`);
-          }
-          continue;
-        }
-
-        const side = top3Side;
-        const entryPrice = cryptoObj.priceUsd;
-
-        // 3. Verify HFT AI recommendations before automatic trade execution
-        const hftVerify = verifyHftAiRecommendations(topItem.symbol, entryPrice, side);
-        if (!hftVerify.isEligible) {
-          addLog('WARNING', `🤖 Auto-Trader suspendeu ordem automática para ${topItem.symbol}: ${hftVerify.reason}`);
-          continue;
-        }
-
-        const flow = generateLiveOrderFlowData(cryptoObj);
-        const signal = generateLocalHFTConfluenceAnalysis(cryptoObj, flow);
-
-        if (hftVerify.stopLoss) {
-          if (!signal.executionPlan) signal.executionPlan = {} as any;
-          signal.executionPlan.stopLoss = hftVerify.stopLoss;
-          addLog('INFO', `🛡️ Ajuste HFT Stop Loss inteligente acionado para ${topItem.symbol} em US$ ${hftVerify.stopLoss.toFixed(2)} abaixo do suporte de volume.`);
-        }
-
-        if (hftVerify.takeProfit) {
-          if (!signal.executionPlan) signal.executionPlan = {} as any;
-          signal.executionPlan.takeProfit1 = hftVerify.takeProfit;
-          addLog('INFO', `🎯 Ajuste HFT Take Profit cirúrgico acionado para ${topItem.symbol} em US$ ${hftVerify.takeProfit.toFixed(2)}.`);
-        }
-
-        addLog('INFO', `🎯 Dupla Chancela Confirmada para ${topItem.symbol}: Top 3 (${top3Side}) x BTC Ponderado (${btcPonderadoSide}) [Score: ${btcMasterWeightedScore}/100]. Ordem LIBERADA.`);
-
-        // Pass bypassFilters as true because Dupla Chancela is fully verified!
-        const res = processConfluenceSignalForTrading(signal, cryptoObj.priceUsd, tempAcc, tempPos, side, true);
-        if (res.tradeOpened) {
-          tempAcc = res.account;
-          tempPos = res.positions;
-          openedCount++;
-          addLog('ORDER_OPEN', `⚡ Auto-Trader executou ${side} no Rank #${topItem.rank} (${topItem.symbol}) via Dupla Chancela Liberada [${topItem.winProbabilityPct}% Prob.].`);
-          
-          if (tempPos.filter(p => p.status === 'OPEN').length >= 3) break;
-        }
-      }
-    } else if (mode === 'CUSTOM') {
-      const allowedSymbols = currentAcc.selectedSymbols || [];
-      const customAssets = currentCryptos.filter(c => allowedSymbols.includes(c.symbol));
-
-      for (const crypto of customAssets) {
-        if (tempPos.some(p => p.status === 'OPEN' && p.symbol === crypto.symbol)) continue;
-
-        const flow = generateLiveOrderFlowData(crypto);
-        const signal = generateLocalHFTConfluenceAnalysis(crypto, flow);
-
-        const side = determineSignalSide(signal);
-        const currentOpenCount = tempPos.filter(p => p.status === 'OPEN').length;
-        const requiredScore = currentOpenCount === 0 ? 55 : currentOpenCount === 1 ? 58 : 62;
-        
-        if (side && signal.confluenceScorePct >= requiredScore) {
-          const hftVerify = verifyHftAiRecommendations(crypto.symbol, crypto.priceUsd, side);
-          if (!hftVerify.isEligible) continue;
-
-          if (hftVerify.stopLoss) {
-            if (!signal.executionPlan) signal.executionPlan = {} as any;
-            signal.executionPlan.stopLoss = hftVerify.stopLoss;
-          }
-          if (hftVerify.takeProfit) {
-            if (!signal.executionPlan) signal.executionPlan = {} as any;
-            signal.executionPlan.takeProfit1 = hftVerify.takeProfit;
-          }
-
-          const res = processConfluenceSignalForTrading(signal, crypto.priceUsd, tempAcc, tempPos);
-          if (res.tradeOpened) {
-            tempAcc = res.account;
-            tempPos = res.positions;
-            openedCount++;
-            addLog('ORDER_OPEN', `⚡ Auto-Trader executou ${side} em ${crypto.symbol} por US$ ${crypto.priceUsd} (Seleção Personalizada - Sniper ${signal.confluenceScorePct}%).`);
-            
-            if (tempPos.filter(p => p.status === 'OPEN').length >= 3) break;
-          }
-        }
-      }
-    } else {
-      // Evaluate all 15 assets
-      const assetsToScan = currentCryptos.slice(0, 15);
-      for (const crypto of assetsToScan) {
-        if (tempPos.some(p => p.status === 'OPEN' && p.symbol === crypto.symbol)) continue;
-
-        const flow = generateLiveOrderFlowData(crypto);
-        const signal = generateLocalHFTConfluenceAnalysis(crypto, flow);
-
-        const side = determineSignalSide(signal);
-        const currentOpenCount = tempPos.filter(p => p.status === 'OPEN').length;
-        const requiredScore = currentOpenCount === 0 ? 55 : currentOpenCount === 1 ? 58 : 62;
-
-        if (side && signal.confluenceScorePct >= requiredScore) {
-          const hftVerify = verifyHftAiRecommendations(crypto.symbol, crypto.priceUsd, side);
-          if (!hftVerify.isEligible) continue;
-
-          if (hftVerify.stopLoss) {
-            if (!signal.executionPlan) signal.executionPlan = {} as any;
-            signal.executionPlan.stopLoss = hftVerify.stopLoss;
-          }
-          if (hftVerify.takeProfit) {
-            if (!signal.executionPlan) signal.executionPlan = {} as any;
-            signal.executionPlan.takeProfit1 = hftVerify.takeProfit;
-          }
-
-          const res = processConfluenceSignalForTrading(signal, crypto.priceUsd, tempAcc, tempPos);
-          if (res.tradeOpened) {
-            tempAcc = res.account;
-            tempPos = res.positions;
-            openedCount++;
-            addLog('ORDER_OPEN', `⚡ Auto-Trader executou ${side} em ${crypto.symbol} por US$ ${crypto.priceUsd} (Sniper Confluência ${signal.confluenceScorePct}%).`);
-            
-            if (tempPos.filter(p => p.status === 'OPEN').length >= 3) break;
-          }
-        }
-      }
-    }
-
-    if (openedCount > 0) {
-      setAccount({ ...tempAcc });
-      setPositions([ ...tempPos ]);
-      addLog('SCAN', `Varredura concluída: ${openedCount} nova(s) operação(ões) executada(s) com base no modo selecionado.`);
-    } else if (forced) {
-      const modeLabel = mode === 'TOP_3_PROBABILITY' 
-        ? 'Top 3 Criptomoedas com Maior Probabilidade' 
-        : mode === 'CUSTOM' 
-        ? 'Ativos Personalizados' 
-        : 'Todos os 15 Ativos';
-      addLog('INFO', `Varredura manual concluída (${modeLabel}). Posições abertas ou sem novos gatilhos neste instante.`);
-    }
-
-    setTimeout(() => setIsScanningNow(false), 500);
   }, [addLog]);
 
   // Tick Loop for Trailing Stop & PnL Updates
@@ -945,7 +806,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           const reasonLabel = recentlyClosed.closeReason === 'TAKE_PROFIT' 
             ? '🎯 Take Profit / Meta de Ganho Atingida'
             : recentlyClosed.closeReason === 'TIME_EXPIRATION'
-            ? `⏱️ Tempo Limite (${currentAcc.maxOperationTimeMinutes || 5} min / +${Math.round((currentAcc.timeDecayProfitTargetUsd || 0.03) * 100)}¢)`
+            ? `⏱️ Tempo Limite (${(currentAcc.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${currentAcc.maxOperationTimeMinutes} min`} / 0¢ Positivo)`
             : recentlyClosed.closeReason === 'AI_DIVERGENCE'
             ? '🤖 Divergência HFT (Reversão)'
             : recentlyClosed.closeReason === 'MARKET_REVERSAL_BTC'
@@ -962,6 +823,15 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         }
       }
 
+      // Evaluate Armed Order Triggers based on Real-Time Times & Trades Aggression Gate
+      const triggerResult = evaluateAndExecuteArmedTriggers(currentCryptos);
+      if (triggerResult.executedTriggers.length > 0) {
+        triggerResult.logs.forEach(logMsg => {
+          addLog('ORDER_OPEN', logMsg);
+        });
+        setArmedTriggers(getArmedTriggers());
+      }
+
       setAccount({...res.account});
       setPositions([...res.positions]);
     }, 1500); // Check every 1.5s
@@ -972,20 +842,16 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   // Listen to AI Signals from Event Bus
   useEffect(() => {
     const unsubscribe = tradingSignalBus.subscribe((signal) => {
-      const currentCryptos = stateRef.current.cryptos;
-      const cryptoData = currentCryptos.find(c => c.symbol === signal.symbol);
-      const currentPrice = cryptoData ? cryptoData.priceUsd : signal.currentPriceUsd;
-
-      executeSignalIfEligible(signal, currentPrice);
+      setSignalTick(Date.now());
     });
     
     return unsubscribe;
-  }, [executeSignalIfEligible]);
+  }, []);
 
-  // Reactive Auto-Execution Engine: Immediately triggers execution the moment 4/4 checks are fulfilled
+  // Reactive Auto-Execution Engine: Immediately triggers execution the moment 8/8 checks are fulfilled
   useEffect(() => {
     if (!account.isAutoTradingEnabled) return;
-    const readyTrigger = evaluatedTriggers.find(t => t.checksMetCount === 4 && !t.openPos && t.status === 'READY');
+    const readyTrigger = evaluatedTriggers.find(t => t.checksMetCount === 8 && !t.openPos && t.status === 'READY');
     if (readyTrigger) {
       executeEvaluatedTriggerImmediately(readyTrigger);
     }
@@ -994,11 +860,13 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   // Background Auto-Trader Scanner Loop (Runs every 4 seconds when ON)
   useEffect(() => {
     const interval = setInterval(() => {
-      runMarketScan(false);
+      if (!isParetoCyclePaused) {
+        runMarketScan(false);
+      }
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [runMarketScan]);
+  }, [runMarketScan, isParetoCyclePaused]);
 
   // Sync external trading account changes
   useEffect(() => {
@@ -1176,16 +1044,19 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   };
 
   const handleSetTimeLimit = (minutes: number) => {
-    const updated = updateTimeManagementSettings(minutes, account.timeDecayProfitTargetUsd || 0.03, account.isTimeManagementEnabled !== false);
+    const updated = updateTimeManagementSettings(minutes, account.timeDecayProfitTargetUsd ?? 0.00, account.isTimeManagementEnabled !== false);
     setAccount(updated);
-    addLog('INFO', `Gerenciamento de Tempo: Limite máximo ajustado para ${minutes} minutos (+US$ ${(account.timeDecayProfitTargetUsd || 0.03).toFixed(2)} / +3¢).`);
+    const label = minutes === 1.5 ? '1 minuto e 30 segundos' : `${minutes} minutos`;
+    addLog('INFO', `Gerenciamento de Tempo: Limite máximo ajustado para ${label} (Finalização com 0 centavos de lucro / Breakeven).`);
   };
 
   const handleToggleTimeManagement = () => {
     const nextVal = account.isTimeManagementEnabled === false;
-    const updated = updateTimeManagementSettings(account.maxOperationTimeMinutes || 5, account.timeDecayProfitTargetUsd || 0.03, nextVal);
+    const currentMins = account.maxOperationTimeMinutes || 1.5;
+    const updated = updateTimeManagementSettings(currentMins, account.timeDecayProfitTargetUsd ?? 0.00, nextVal);
     setAccount(updated);
-    addLog('INFO', nextVal ? `Gerenciamento de Tempo (>5 min +3¢) ATIVADO.` : 'Gerenciamento de Tempo DESATIVADO.');
+    const label = currentMins === 1.5 ? '1m 30s' : `${currentMins} min`;
+    addLog('INFO', nextVal ? `Gerenciamento de Tempo (>${label} / 0¢ lucro) ATIVADO.` : 'Gerenciamento de Tempo DESATIVADO.');
   };
 
   const handleSetTrailingStep = (stepUsd: number) => {
@@ -1199,6 +1070,46 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     const updated = updateTrailingStopSettings(account.trailingStepUsd || 0.03, nextVal);
     setAccount(updated);
     addLog('INFO', nextVal ? 'Trailing Stop Dinâmico (+3¢) ATIVADO.' : 'Trailing Stop Dinâmico DESATIVADO.');
+  };
+
+  const handleToggleInvertedExecution = () => {
+    const nextVal = account.isInvertedExecutionEnabled === false;
+    const updated = updateInvertedExecutionSettings(nextVal);
+    setAccount(updated);
+    addLog('INFO', nextVal 
+      ? '🔄 Execução Invertida ATIVADA: Todas as ordens serão executadas no sentido inverso (Compra ➔ Venda | Venda ➔ Compra).' 
+      : '▶️ Execução Direta Padrão ATIVADA: Ordens seguem a direção original do sinal de confluência.'
+    );
+  };
+
+  const handleToggleAiDivergence = () => {
+    const nextVal = account.isAiDivergenceExitEnabled === false;
+    const updated = updateAiDivergenceSettings(nextVal);
+    setAccount(updated);
+    addLog('INFO', nextVal 
+      ? '🤖 Finalização por Divergência IA ATIVADA (Encerra ordens por mudança de viés se lucro < +1¢).' 
+      : '🤖 Finalização por Divergência IA DESATIVADA (Ordens mantidas abertas independente da mudança de direção da IA).'
+    );
+  };
+
+  const handleSetReentryCooldown = (cooldownSec: number) => {
+    const updated = updateReentryCooldownSettings(cooldownSec);
+    setAccount(updated);
+    const label = cooldownSec === 20 ? '00:20 (20s)' :
+                  cooldownSec === 60 ? '00:01:00 (1m)' :
+                  cooldownSec === 180 ? '00:03:00 (3m)' :
+                  cooldownSec === 300 ? '00:05:00 (5m)' : '00:10:00 (10m)';
+    addLog('INFO', `⏳ Tempo de Recompra Pós-Fechamento configurado para: ${label}.`);
+  };
+
+  const handleToggleAggressionTrigger = () => {
+    const nextVal = account.isAggressionTriggerEnabled === false;
+    const updated = updateAggressionTriggerSettings(nextVal);
+    setAccount(updated);
+    addLog('INFO', nextVal 
+      ? '🛡️ Gatilho de Execução Time & Trades ATIVADO: Ordens só serão liberadas se a agressão do fluxo for a favor da posição executada.' 
+      : '🛡️ Gatilho de Execução Time & Trades DESATIVADO (Executa sem checagem de fluxo).'
+    );
   };
 
   const handleClosePosition = (id: string) => {
@@ -1215,7 +1126,80 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   };
 
   const openPositions = positions.filter(p => p.status === 'OPEN');
-  const closedPositions = positions.filter(p => p.status === 'CLOSED').slice(0, 10);
+  const allClosedPositions = positions.filter(p => p.status === 'CLOSED');
+  const closedPositions = useMemo(() => {
+    return [...allClosedPositions].sort((a, b) => (b.closeTime || b.openTime || 0) - (a.closeTime || a.openTime || 0));
+  }, [allClosedPositions]);
+
+  // --- Analisador de Desempenho (Acertividade) ---
+  const performanceStats = useMemo(() => {
+    let accuracyPct = 0;
+    let bestHourStr = "--:--";
+    let worstHourStr = "--:--";
+    let bestHourAcc = 0;
+    let worstHourAcc = 0;
+    let totalTrades = allClosedPositions.length;
+    let winningTrades = 0;
+    
+    if (totalTrades > 0) {
+      winningTrades = allClosedPositions.filter(p => p.realizedPnlUsd > 0).length;
+      accuracyPct = Math.round((winningTrades / totalTrades) * 100);
+
+      const hourlyStats: Record<number, { total: number; wins: number }> = {};
+      allClosedPositions.forEach(p => {
+        if (p.closeTime) {
+          const hour = new Date(p.closeTime).getHours();
+          if (!hourlyStats[hour]) hourlyStats[hour] = { total: 0, wins: 0 };
+          hourlyStats[hour].total++;
+          if (p.realizedPnlUsd > 0) hourlyStats[hour].wins++;
+        }
+      });
+
+      let maxAcc = -1;
+      let minAcc = 101;
+      let bestH = -1;
+      let worstH = -1;
+      let bestHTotal = 0;
+      let worstHTotal = 0;
+
+      Object.entries(hourlyStats).forEach(([hourStr, stats]) => {
+        if (stats.total >= 1) {
+          const acc = (stats.wins / stats.total) * 100;
+          
+          if (acc > maxAcc || (acc === maxAcc && stats.total > bestHTotal)) { 
+            maxAcc = acc; 
+            bestH = parseInt(hourStr); 
+            bestHTotal = stats.total;
+          }
+          if (acc < minAcc || (acc === minAcc && stats.total > worstHTotal)) { 
+            minAcc = acc; 
+            worstH = parseInt(hourStr); 
+            worstHTotal = stats.total;
+          }
+        }
+      });
+
+      if (bestH !== -1) {
+        bestHourStr = `${bestH.toString().padStart(2, '0')}h - ${(bestH + 1).toString().padStart(2, '0')}h`;
+        bestHourAcc = Math.round(maxAcc);
+      }
+      if (worstH !== -1) {
+        worstHourStr = `${worstH.toString().padStart(2, '0')}h - ${(worstH + 1).toString().padStart(2, '0')}h`;
+        worstHourAcc = Math.round(minAcc);
+      }
+    }
+
+    return {
+      totalTrades,
+      winningTrades,
+      accuracyPct,
+      bestHourStr,
+      worstHourStr,
+      bestHourAcc,
+      worstHourAcc
+    };
+  }, [allClosedPositions]);
+
   const activeSelectionMode = account.assetSelectionMode || 'ALL_ASSETS';
 
   return (
@@ -1552,6 +1536,23 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                   PARETO 80/20 ATIVO
                 </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40" title="Nunca compra próximo de resistência ou vende próximo de suporte.">
+                  <ShieldCheck className="w-3 h-3 inline-block mr-1 -mt-0.5" />
+                  ANTI-ARMADILHA ATIVO
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsParetoCyclePaused(!isParetoCyclePaused)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer ${
+                    isParetoCyclePaused
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400'
+                      : 'bg-amber-600 hover:bg-amber-500 text-white border border-amber-500/60'
+                  }`}
+                  title={isParetoCyclePaused ? 'Retomar Ciclo Pareto e Varredura' : 'Pausar Ciclo Pareto e Varredura'}
+                >
+                  {isParetoCyclePaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                  {isParetoCyclePaused ? 'Retomar Ciclo' : 'Pausar Ciclo'}
+                </button>
               </div>
               <p className="text-[11px] font-sans text-slate-300 mt-0.5">
                 Calculadas em tempo real pelas confluências On-Chain, Sentimento, Indicadores e Book de 100 níveis com fluxo Times & Trades.
@@ -1774,37 +1775,81 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                   </div>
                 </div>
 
-                {/* Card Bottom: Quick Exec Button */}
-                <div>
+                {/* Card Bottom: Quick Exec & Arm Trigger Buttons */}
+                <div className="space-y-2">
                   {openPos ? (
                     <div className="w-full py-2 bg-slate-800/50 text-slate-400 text-[10px] font-bold rounded-lg text-center border border-slate-700 flex items-center justify-center gap-1.5">
                       <Activity className="w-3 h-3" /> Posição Aberta em Andamento
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleExecuteTop3Directly(item)}
-                      disabled={isScanningNow}
-                      className={`w-full py-2 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 border shadow-sm ${
-                        isWarningNoTrade
-                          ? 'bg-amber-600/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/50 hover:shadow-amber-950/40'
-                          : isButtonLong
-                          ? 'bg-emerald-600/25 hover:bg-emerald-500/35 text-emerald-300 border-emerald-500/50 hover:shadow-emerald-900/40'
-                          : 'bg-rose-600/25 hover:bg-rose-500/35 text-rose-300 border-rose-500/50 hover:shadow-rose-900/40'
-                      }`}
-                    >
-                      {isWarningNoTrade ? (
-                        <>
-                          <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Executar (Alerta: Absorção Crítica)</span>
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-3.5 h-3.5" />
-                          <span>Executar {isButtonLong ? 'Compra (LONG)' : 'Venda (SHORT)'} no Top #{item.rank}</span>
-                        </>
-                      )}
-                    </button>
+                    <>
+                      {(() => {
+                        const cardTrigger = armedTriggers.find(t => t.symbol === item.symbol && t.status === 'ARMED');
+                        if (cardTrigger) {
+                          return (
+                            <div className="p-2 rounded-lg bg-amber-950/60 border border-amber-500/60 flex items-center justify-between gap-2 shadow-sm animate-pulse">
+                              <div className="flex items-center gap-1.5 overflow-hidden">
+                                <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <div className="truncate">
+                                  <span className="text-[10px] font-black text-amber-300 block truncate">
+                                    ⚡ GATILHO ARMADO ({cardTrigger.targetSide})
+                                  </span>
+                                  <span className="text-[8.5px] text-slate-300 block truncate">
+                                    {cardTrigger.currentAggressionStatus}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelTrigger(cardTrigger.id)}
+                                className="px-2 py-1 rounded bg-rose-600/40 hover:bg-rose-500/50 text-rose-200 border border-rose-500/50 text-[9px] font-bold shrink-0"
+                              >
+                                Desarmar
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleExecuteTop3Directly(item)}
+                              disabled={isScanningNow}
+                              className={`py-2 px-2 rounded-lg text-[10.5px] font-bold transition-all flex items-center justify-center gap-1 border shadow-sm ${
+                                isWarningNoTrade
+                                  ? 'bg-amber-600/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/50 hover:shadow-amber-950/40'
+                                  : isButtonLong
+                                  ? 'bg-emerald-600/25 hover:bg-emerald-500/35 text-emerald-300 border-emerald-500/50 hover:shadow-emerald-900/40'
+                                  : 'bg-rose-600/25 hover:bg-rose-500/35 text-rose-300 border-rose-500/50 hover:shadow-rose-900/40'
+                              }`}
+                            >
+                              {isWarningNoTrade ? (
+                                <>
+                                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                  <span className="truncate">Executar (Absorção)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Zap className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">Exec. Direta ({isButtonLong ? 'LONG' : 'SHORT'})</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleArmTrigger(item.symbol, isButtonLong ? 'LONG' : 'SHORT', 100, 5)}
+                              className="py-2 px-2 rounded-lg text-[10.5px] font-bold transition-all flex items-center justify-center gap-1 border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 shadow-sm"
+                              title="Armar gatilho de liberação: aguarda o momento em que a fita confirmar agressão a favor antes de abrir a posição"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span className="truncate">⚡ Armar Gatilho</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </>
                   )}
                 </div>
 
@@ -1869,10 +1914,10 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                Auto Take-Profit Scalper: Finalizar ao Atingir 10 Centavos
+                Auto Take-Profit Scalper: Finalizar ao Atingir 2 Centavos
               </span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                +US$ {(account.targetProfitUsd || 0.10).toFixed(2)} (+{Math.round((account.targetProfitUsd || 0.10) * 100)}¢)
+                +US$ {(account.targetProfitUsd || 0.02).toFixed(2)} (+{Math.round((account.targetProfitUsd || 0.02) * 100)}¢)
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-sans mt-0.5">
@@ -1883,8 +1928,8 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
 
         <div className="flex items-center gap-2 flex-wrap shrink-0">
           <span className="text-[10px] text-slate-400 uppercase">Alvo Rápido:</span>
-          {[0.05, 0.10, 0.25, 0.50, 1.00].map((amt) => {
-            const isSelected = (account.targetProfitUsd || 0.10) === amt;
+          {[0.02, 0.05, 0.10, 0.25, 0.50].map((amt) => {
+            const isSelected = (account.targetProfitUsd || 0.02) === amt;
             return (
               <button
                 key={amt}
@@ -1915,7 +1960,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         </div>
       </div>
 
-      {/* Operation Time Management Bar (5 Minutes Max -> Exit on +3 Cents) */}
+      {/* Operation Time Management Bar (1.5 Minutes Max -> Exit on 0 Cents Positive Profit / Never in Loss) */}
       <div className="p-4 rounded-xl bg-[#12141a]/90 border border-amber-500/30 font-mono flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-start sm:items-center gap-3">
           <div className="p-2.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 shrink-0">
@@ -1923,23 +1968,28 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                Gerenciamento de Tempo HFT: Finalizar em +3 Centavos após Tempo Máximo (5 Minutos)
+              <span className={`text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${account.isTimeManagementEnabled !== false ? 'text-white' : 'text-slate-400 line-through'}`}>
+                Gerenciamento de Tempo HFT: Max {(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${account.maxOperationTimeMinutes} Minutos`} (0¢ Positivo / Sem Prejuízo)
               </span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                {account.maxOperationTimeMinutes || 5} min • Min. +US$ {(account.timeDecayProfitTargetUsd || 0.03).toFixed(2)} (+3¢)
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${account.isTimeManagementEnabled !== false ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-rose-950/40 text-rose-400 border-rose-800/40'}`}>
+                {account.isTimeManagementEnabled !== false ? `${(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${account.maxOperationTimeMinutes} min`} • 0¢ Positivo (ATIVO)` : '🔴 DESATIVADO'}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-sans mt-0.5">
-              Após o tempo máximo de operação (<strong>{account.maxOperationTimeMinutes || 5} min</strong>), a ordem <strong>só é finalizada se estiver com no mínimo 3 centavos positivo (+US$ 0,03)</strong>, liberando margem sem fechar no zero ou negativo.
+              {account.isTimeManagementEnabled !== false ? (
+                <>Após o tempo limite (<strong>{(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${account.maxOperationTimeMinutes} min`}</strong>), ordens com lucro <strong>≥ +3¢</strong> ignoram o tempo sob Trailing Stop. Ordens com lucro positivo (&ge; 0¢) são finalizadas no lucro neutro positivo. <strong>Ordens em prejuízo (&lt; US$ 0,00) NUNCA são encerradas por tempo</strong>, mantendo-se abertas até recuperarem.</>
+              ) : (
+                <span className="text-rose-400/90 font-medium">⚠️ O gerenciamento de tempo está DESATIVADO. As ordens NÃO serão encerradas por tempo limite, permanecendo abertas até atingir o Take Profit ou Stop Loss.</span>
+              )}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap shrink-0">
           <span className="text-[10px] text-slate-400 uppercase">Tempo Limite:</span>
-          {[3, 5, 10, 15].map((mins) => {
-            const isSelected = (account.maxOperationTimeMinutes || 5) === mins;
+          {[1.5, 3, 5, 10, 15].map((mins) => {
+            const isSelected = (account.maxOperationTimeMinutes || 1.5) === mins;
+            const btnLabel = mins === 1.5 ? '1m 30s' : `${mins} min`;
             return (
               <button
                 key={mins}
@@ -1951,7 +2001,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                     : 'bg-[#0a0a0c] text-slate-400 border border-slate-800 hover:text-white hover:border-slate-700'
                 }`}
               >
-                {mins} min
+                {btnLabel}
               </button>
             );
           })}
@@ -2007,6 +2057,456 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         </div>
       </div>
 
+      {/* Inverted Execution Mode Bar (Execução de Ordens Invertidas: COMPRA -> VENDA | VENDA -> COMPRA) & AI Divergence Exit Toggle */}
+      <div className="p-4 rounded-xl bg-[#12141a]/90 border border-purple-500/30 font-mono flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-purple-500/20 border border-purple-500/40 text-purple-400 shrink-0">
+            <RefreshCw className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                Execução Invertida de Ordens (Inverso / Contra-Tendência)
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                account.isInvertedExecutionEnabled !== false
+                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                {account.isInvertedExecutionEnabled !== false ? 'COMPRA ➔ VENDA | VENDA ➔ COMPRA' : 'DIREÇÃO PADRÃO'}
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                account.isAiDivergenceExitEnabled !== false
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                🤖 Divergência IA: {account.isAiDivergenceExitEnabled !== false ? 'ATIVA (< +1¢)' : 'DESATIVADA'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+              Inverte a execução de ordens e gerencia a finalização por <strong>🤖 Divergência IA</strong> (quando a direção da IA reverte e o lucro é inferior a 1 centavo: &lt; US$ 0,01).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleInvertedExecution}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 ${
+              account.isInvertedExecutionEnabled !== false
+                ? 'bg-purple-950/80 text-purple-300 border-purple-500/50 hover:bg-purple-900/80 shadow-lg shadow-purple-950/50'
+                : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
+            }`}
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            {account.isInvertedExecutionEnabled !== false ? '🔄 INVERSÃO ATIVA' : 'INVERSÃO DESATIVADA'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleAiDivergence}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 ${
+              account.isAiDivergenceExitEnabled !== false
+                ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/50 hover:bg-cyan-900/80 shadow-lg shadow-cyan-950/50'
+                : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            {account.isAiDivergenceExitEnabled !== false ? '🤖 DIVERGÊNCIA IA ATIVA' : '🤖 DIVERGÊNCIA IA DESATIVADA'}
+          </button>
+        </div>
+      </div>
+
+      {/* Reentry Cooldown Management Bar (00:20; 00:01:00; 00:03; 00:05:00; 00:10) */}
+      <div className="p-4 rounded-xl bg-[#12141a]/90 border border-blue-500/30 font-mono flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-blue-500/20 border border-blue-500/40 text-blue-400 shrink-0">
+            <Clock className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                Recompra Pós-Fechamento (Cooldown de Reentrada)
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                {(account.reentryCooldownSeconds || 20) === 20 ? '00:20 (20s)' :
+                 (account.reentryCooldownSeconds || 20) === 60 ? '00:01:00 (1m)' :
+                 (account.reentryCooldownSeconds || 20) === 180 ? '00:03 (3m)' :
+                 (account.reentryCooldownSeconds || 20) === 300 ? '00:05:00 (5m)' : '00:10 (10m)'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+              Impede que o robô crie nova ordem da mesma criptomoeda que finalizou durante o intervalo selecionado. Após decorrido o tempo, a criação de nova ordem fica liberada respeitando todos os gatilhos e filtros.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <span className="text-[10px] text-slate-400 uppercase">Tempo de Espera:</span>
+          {[
+            { label: '00:20', sec: 20, tip: '20s' },
+            { label: '00:01:00', sec: 60, tip: '1 min' },
+            { label: '00:03', sec: 180, tip: '3 min' },
+            { label: '00:05:00', sec: 300, tip: '5 min' },
+            { label: '00:10', sec: 600, tip: '10 min' }
+          ].map(opt => {
+            const isSelected = (account.reentryCooldownSeconds || 20) === opt.sec;
+            return (
+              <button
+                key={opt.label}
+                type="button"
+                onClick={() => handleSetReentryCooldown(opt.sec)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                  isSelected
+                    ? 'bg-blue-500 text-black shadow-md shadow-blue-950/50'
+                    : 'bg-[#0a0a0c] text-slate-400 border border-slate-800 hover:text-white hover:border-slate-700'
+                }`}
+                title={`Bloquear reentrada em ${opt.tip} após finalizar ordem`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Gatilho de Execução da Ordem (Liberar SOMENTE se agressão no Time & Trades for a favor) */}
+      <div className="p-4 rounded-xl bg-[#12141a]/90 border border-emerald-500/30 font-mono flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0">
+            <ShieldCheck className="w-5 h-5 animate-pulse" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                Gatilho de Execução Time & Trades (Agressão a Favor)
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                account.isAggressionTriggerEnabled !== false
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                {account.isAggressionTriggerEnabled !== false ? '🛡️ GATILHO ATIVO (ORDEM BLOQUEADA SE CONTRA O FLUXO)' : 'DESATIVADO (EXECUTA DIRETO)'}
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                IA TAPE READING INTEGRADA
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+              • <strong>Ordem de Compra (LONG)</strong>: Liberada <strong>somente</strong> se houver agressão compradora a favor e nenhum vendedor empurrando o preço para baixo no Bid.<br />
+              • <strong>Ordem de Venda (SHORT)</strong>: Liberada <strong>somente</strong> se houver agressão vendedora a favor e nenhum comprador pagando mais caro no Ask.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleAggressionTrigger}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 shadow-md ${
+              account.isAggressionTriggerEnabled !== false
+                ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/60 hover:bg-emerald-900/80 shadow-emerald-950/50'
+                : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>{account.isAggressionTriggerEnabled !== false ? '🛡️ GATILHO ATIVADO' : 'GATILHO DESATIVADO'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* PAINEL AVANÇADO DE GATILHOS DE EMISSÃO DE ORDENS */}
+      <div className="p-4 rounded-xl bg-gradient-to-br from-[#0f141f] via-[#12141a] to-[#0f141f] border border-cyan-500/40 shadow-xl font-mono space-y-4">
+        {/* Cabeçalho do Painel */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3.5 border-b border-slate-800">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-gradient-to-br from-cyan-500/20 to-indigo-500/20 text-cyan-300 border border-cyan-500/40 shadow-lg shadow-cyan-950/40 shrink-0">
+              <Zap className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-1.5">
+                  ⚡ Gatilho de Liberação Inteligente de Ordens
+                </h3>
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                  {armedTriggers.filter(t => t.status === 'ARMED').length} Armado(s)
+                </span>
+                {armedTriggers.some(t => t.status === 'TRIGGERED') && (
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    {armedTriggers.filter(t => t.status === 'TRIGGERED').length} Disparado(s)
+                  </span>
+                )}
+                <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                  <Activity className="w-3 h-3 text-emerald-400 animate-spin" /> Monitorando Fita Segundo a Segundo
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+                Arme ordens com inteligência: o robô monitora a fita em tempo real e <strong>libera a emissão no microssegundo exato</strong> em que o fluxo comprador (LONG) ou vendedor (SHORT) for confirmado, com proteção contra reversões falsas!
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap self-end lg:self-center">
+            {/* 1-Click Arm Top 3 Pareto */}
+            <button
+              type="button"
+              onClick={handleArmTop3Pareto}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-black bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white border border-cyan-400/40 transition shadow-md shadow-cyan-950/60 flex items-center gap-1.5"
+              title="Arma ordens simultâneas para os 3 melhores ativos selecionados pelo algoritmo de Pareto 80/20"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-yellow-300 animate-bounce" />
+              <span>⚡ Armar Top 3 Pareto (1-Click)</span>
+            </button>
+
+            {armedTriggers.some(t => t.status === 'ARMED') && (
+              <button
+                type="button"
+                onClick={handleClearAllTriggers}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-500/40 transition flex items-center gap-1"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                <span>Desarmar Todos</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Abas de Filtragem de Status dos Gatilhos */}
+        <div className="flex items-center justify-between gap-2 flex-wrap pb-1">
+          <div className="flex items-center gap-1 bg-[#090c12] p-1 rounded-lg border border-slate-800">
+            {(['ALL', 'ARMED', 'TRIGGERED', 'CANCELLED'] as const).map(tab => {
+              const count = tab === 'ALL' ? armedTriggers.length : armedTriggers.filter(t => t.status === tab).length;
+              const labels = {
+                ALL: 'TODOS',
+                ARMED: '⚡ ARMADOS',
+                TRIGGERED: '🟢 DISPARADOS',
+                CANCELLED: '✕ CANCELADOS'
+              };
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setTriggerStatusFilter(tab)}
+                  className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition flex items-center gap-1.5 ${
+                    triggerStatusFilter === tab
+                      ? 'bg-cyan-950 text-cyan-300 border border-cyan-600/60 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                  }`}
+                >
+                  <span>{labels[tab]}</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[9px] ${
+                    triggerStatusFilter === tab ? 'bg-cyan-500/30 text-cyan-200' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <span className="text-[10px] text-slate-500">
+            💡 Os gatilhos executam automaticamente mesmo com o painel fechado.
+          </span>
+        </div>
+
+        {/* Lista de Gatilhos */}
+        {(() => {
+          const displayTriggers = triggerStatusFilter === 'ALL'
+            ? armedTriggers
+            : armedTriggers.filter(t => t.status === triggerStatusFilter);
+
+          if (displayTriggers.length === 0) {
+            return (
+              <div className="p-6 rounded-xl border border-dashed border-slate-800 text-center text-slate-400 text-xs font-mono space-y-2 bg-[#090c12]/50">
+                <div className="flex items-center justify-center gap-2 text-slate-300 font-bold">
+                  <Zap className="w-4 h-4 text-cyan-400" />
+                  <span>
+                    {triggerStatusFilter === 'ALL' && 'Nenhum gatilho de ordem configurado no momento.'}
+                    {triggerStatusFilter === 'ARMED' && 'Nenhum gatilho armado aguardando agressão no momento.'}
+                    {triggerStatusFilter === 'TRIGGERED' && 'Nenhum gatilho foi disparado recentemente nesta sessão.'}
+                    {triggerStatusFilter === 'CANCELLED' && 'Nenhum gatilho cancelado no histórico.'}
+                  </span>
+                </div>
+                <p className="text-slate-500 max-w-lg mx-auto font-sans text-[11px]">
+                  Utilize o painel de armação rápida abaixo ou clique no botão <strong>"⚡ Armar Top 3 Pareto"</strong> para programar disparos inteligentes com base no fluxo institucional do Time & Trades.
+                </p>
+              </div>
+            );
+          }
+
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {displayTriggers.map((trigger) => {
+                const isLong = trigger.targetSide === 'LONG';
+                const isArmed = trigger.status === 'ARMED';
+                const isTriggered = trigger.status === 'TRIGGERED';
+                const isCancelled = trigger.status === 'CANCELLED';
+                const isExpanded = expandedTriggerId === trigger.id;
+
+                const modeLabels: Record<OrderTriggerMode, { label: string; icon: string; color: string }> = {
+                  INSTANT_AGGRESSION: { label: 'Agressão Instantânea', icon: '⚡', color: 'text-cyan-300 border-cyan-500/40 bg-cyan-950/40' },
+                  WHALE_VOLUME: { label: `Volume Baleia (≥ $${trigger.minAggressionVolumeUsd?.toLocaleString() || '2,500'})`, icon: '🐋', color: 'text-indigo-300 border-indigo-500/40 bg-indigo-950/40' },
+                  CONFLUENCE_DUAL: { label: 'Dupla Confluência (Fita + 14%/86%)', icon: '🧠', color: 'text-amber-300 border-amber-500/40 bg-amber-950/40' }
+                };
+
+                const currentModeInfo = modeLabels[trigger.triggerMode || 'INSTANT_AGGRESSION'];
+
+                return (
+                  <div 
+                    key={trigger.id}
+                    className={`p-3.5 rounded-xl border shadow-lg flex flex-col justify-between gap-3 relative overflow-hidden transition-all ${
+                      isArmed
+                        ? 'bg-[#0b0e14] border-cyan-500/50 shadow-cyan-950/20'
+                        : isTriggered
+                        ? 'bg-[#0b120f] border-emerald-500/50 shadow-emerald-950/20'
+                        : 'bg-[#0e0f14] border-slate-800 opacity-75'
+                    }`}
+                  >
+                    <div className="absolute top-0 right-0 w-28 h-28 bg-cyan-500/5 rounded-full blur-xl pointer-events-none" />
+                    
+                    <div>
+                      {/* Top Header do Card */}
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-base font-black text-white">{trigger.symbol}</span>
+                          <span className="text-[10px] text-slate-400 font-sans">({trigger.coinName})</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-1.5">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                            isLong 
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' 
+                              : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                          }`}>
+                            {isLong ? '🟢 COMPRA (LONG)' : '🔴 VENDA (SHORT)'}
+                          </span>
+
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase border ${
+                            isArmed 
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
+                              : isTriggered
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : 'bg-slate-800 text-slate-400 border-slate-700'
+                          }`}>
+                            {isArmed ? '⚡ ARMADO' : isTriggered ? '🟢 DISPARADO' : '✕ CANCELADO'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Badges de Modo e Auto-Rearme */}
+                      <div className="flex items-center gap-1.5 flex-wrap mb-2">
+                        <span className={`px-2 py-0.5 rounded text-[9.5px] font-bold border flex items-center gap-1 ${currentModeInfo.color}`}>
+                          <span>{currentModeInfo.icon}</span>
+                          <span>{currentModeInfo.label}</span>
+                        </span>
+
+                        {trigger.autoRearmOnClose && (
+                          <span className="px-2 py-0.5 rounded text-[9.5px] font-bold border bg-purple-950/40 text-purple-300 border-purple-500/40 flex items-center gap-1">
+                            <RotateCcw className="w-2.5 h-2.5" />
+                            <span>Auto-Rearme</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Detalhes do Gatilho */}
+                      <div className="space-y-1.5 text-[10.5px]">
+                        <div className="p-2 rounded-lg bg-slate-900/70 border border-slate-800">
+                          <span className="text-[9px] text-slate-400 uppercase block font-sans">Condição Requerida para Emissão:</span>
+                          <span className="text-slate-200 font-sans font-bold leading-tight block">
+                            {trigger.requiredCondition}
+                          </span>
+                        </div>
+
+                        {/* Monitoramento ao Vivo da Fita / Time & Trades */}
+                        <div className={`p-2 rounded-lg border ${
+                          isArmed 
+                            ? 'bg-amber-950/30 border-amber-500/40' 
+                            : isTriggered 
+                            ? 'bg-emerald-950/30 border-emerald-500/40' 
+                            : 'bg-slate-900/60 border-slate-800'
+                        }`}>
+                          <div className="flex items-center justify-between gap-1 mb-0.5">
+                            <span className="text-[9px] text-amber-400 uppercase font-bold flex items-center gap-1">
+                              <Activity className={`w-3 h-3 ${isArmed ? 'animate-pulse' : ''}`} /> 
+                              {isArmed ? 'Status no Time & Trades:' : isTriggered ? 'Execução Confirmada:' : 'Status:'}
+                            </span>
+                            <span className="text-[8px] text-slate-400 font-mono">
+                              {new Date(trigger.lastTapeCheckTime).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <p className="text-white font-bold font-mono text-[10px] leading-tight">
+                            {trigger.currentAggressionStatus}
+                          </p>
+                          {isTriggered && trigger.executedPrice && (
+                            <div className="mt-1 pt-1 border-t border-emerald-500/30 text-[9.5px] text-emerald-300 flex items-center justify-between">
+                              <span>Entrada Executada: <strong>US$ {trigger.executedPrice.toFixed(4)}</strong></span>
+                              <span>{new Date(trigger.triggeredAt || Date.now()).toLocaleTimeString()}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Margem, Alavancagem e Horário */}
+                        <div className="flex items-center justify-between text-[9px] text-slate-400 pt-0.5">
+                          <span>Margem: <strong className="text-slate-200">${trigger.sizeUsd} ({trigger.leverage}x)</strong></span>
+                          <span>Armado às: <strong className="text-slate-200">{new Date(trigger.armedAt).toLocaleTimeString()}</strong></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Botões de Ação do Card */}
+                    <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2">
+                      {isArmed ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleForceTriggerImmediately(trigger.id)}
+                            className="flex-1 py-1.5 rounded-lg bg-cyan-600/90 hover:bg-cyan-500 text-white border border-cyan-400/40 text-[10px] font-black transition flex items-center justify-center gap-1 shadow-sm"
+                            title="Dispara a ordem imediatamente a mercado ignorando a espera da fita"
+                          >
+                            <Zap className="w-3 h-3 text-yellow-300" />
+                            <span>⚡ Forçar Disparo</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCancelTrigger(trigger.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-500/50 text-slate-300 border border-slate-700 text-[10px] font-bold transition flex items-center justify-center gap-1"
+                            title="Desarmar este gatilho"
+                          >
+                            <XCircle className="w-3 h-3" />
+                            <span>Desarmar</span>
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleArmTrigger(
+                            trigger.symbol, 
+                            trigger.targetSide, 
+                            trigger.sizeUsd, 
+                            trigger.leverage, 
+                            trigger.triggerMode, 
+                            trigger.minAggressionVolumeUsd, 
+                            trigger.autoRearmOnClose
+                          )}
+                          className="w-full py-1.5 rounded-lg bg-slate-800/80 hover:bg-cyan-950/80 hover:text-cyan-300 hover:border-cyan-500/50 text-slate-300 border border-slate-700 text-[10px] font-bold transition flex items-center justify-center gap-1"
+                        >
+                          <Zap className="w-3 h-3 text-cyan-400" />
+                          <span>⚡ Re-Armar Gatilho Novamente</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+
+      </div>
+
       {/* Active Positions */}
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -2016,7 +2516,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           </div>
           {openPositions.length > 0 && (
             <span className="text-[11px] font-mono text-emerald-400 font-bold flex items-center gap-1">
-              <Activity className="w-3.5 h-3.5 animate-pulse" /> Gestão Dinâmica, Scalper +10¢ & Tempo (5min +3¢) Ativos
+              <Activity className="w-3.5 h-3.5 animate-pulse" /> Gestão Dinâmica, Scalper +10¢ {account.isTimeManagementEnabled !== false ? `& Tempo (${(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${account.maxOperationTimeMinutes}min`} / 0¢ Positivo) Ativos` : '& Tempo Desativado'}
             </span>
           )}
         </div>
@@ -2030,7 +2530,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                   <span>Varrendo a seleção de ativos ({activeSelectionMode === 'ALL_ASSETS' ? 'Todos os 15 Ativos' : activeSelectionMode === 'CUSTOM' ? 'Ativos Personalizados' : '15 Ativos'}) a cada 4s...</span>
                 </div>
                 <p className="text-slate-500 max-w-md">
-                  O robô abrirá até 3 posições simultâneas e finalizará cada uma automaticamente em +US$ {(account.targetProfitUsd || 0.10).toFixed(2)} (ou em +US$ 0,03 após 5 min), liberando nova entrada!
+                  O robô abrirá até 3 posições simultâneas e finalizará cada uma automaticamente em +US$ {(account.targetProfitUsd || 0.02).toFixed(2)} {account.isTimeManagementEnabled !== false ? `(ou em 0 centavos positivo após ${(account.maxOperationTimeMinutes || 1.5) === 1.5 ? '1 min 30s' : `${account.maxOperationTimeMinutes} min`}, sem jamais fechar no prejuízo)` : '(tempo limite desativado)'}, liberando nova entrada!
                 </p>
               </>
             ) : (
@@ -2043,21 +2543,26 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         ) : (
           <div className="space-y-3">
             {openPositions.map(pos => {
-              const isProfit = pos.unrealizedPnlUsd >= 0;
-              const target = pos.targetProfitUsd || account.targetProfitUsd || 0.10;
+              const unrealizedPnlUsd = pos.unrealizedPnlUsd ?? 0;
+              const unrealizedPnlPct = pos.unrealizedPnlPct ?? 0;
+              const sizeUsd = pos.sizeUsd ?? 0;
+              const isProfit = unrealizedPnlUsd >= 0;
+              const target = pos.targetProfitUsd || account.targetProfitUsd || 0.02;
               const isQuickProfitEnabled = pos.isQuickProfitExitEnabled !== undefined ? pos.isQuickProfitExitEnabled : (account.isQuickProfitExitEnabled !== false);
-              const progressPct = Math.min(100, Math.max(0, (pos.unrealizedPnlUsd / target) * 100));
+              const progressPct = Math.min(100, Math.max(0, (unrealizedPnlUsd / target) * 100));
 
               // Time elapsed calculations
               const elapsedSec = Math.max(0, Math.floor((Date.now() - (pos.openTime || Date.now())) / 1000));
               const elapsedMins = Math.floor(elapsedSec / 60);
               const elapsedRemainderSec = elapsedSec % 60;
               const formattedDuration = `${elapsedMins.toString().padStart(2, '0')}:${elapsedRemainderSec.toString().padStart(2, '0')}`;
-              const maxMinutes = pos.maxOperationTimeMinutes || account.maxOperationTimeMinutes || 5;
-              const isTimeMgmtEnabled = pos.isTimeManagementEnabled !== undefined ? pos.isTimeManagementEnabled : (account.isTimeManagementEnabled !== false);
-              const isTimeExceeded = elapsedMins >= maxMinutes;
-              const timeProfitTarget = pos.timeDecayProfitTargetUsd || account.timeDecayProfitTargetUsd || 0.03;
-              const isReadyForTimeExit = isTimeMgmtEnabled && isTimeExceeded && pos.unrealizedPnlUsd >= timeProfitTarget;
+              const maxMinutes = pos.maxOperationTimeMinutes || account.maxOperationTimeMinutes || 1.5;
+              const isTimeMgmtEnabled = account.isTimeManagementEnabled !== false && pos.isTimeManagementEnabled !== false;
+              const maxSeconds = maxMinutes * 60;
+              const isTimeExceeded = elapsedSec >= maxSeconds;
+              const maxMinutesLabel = maxMinutes === 1.5 ? '1m 30s' : `${maxMinutes}m`;
+              const maxMinutesFormatted = maxMinutes === 1.5 ? '01:30' : `${Math.floor(maxMinutes).toString().padStart(2, '0')}:00`;
+              const isReadyForTimeExit = isTimeMgmtEnabled && isTimeExceeded;
               const isDynamicTrailingEnabled = pos.isDynamicTrailingStopEnabled !== undefined ? pos.isDynamicTrailingStopEnabled : (account.isDynamicTrailingStopEnabled !== false);
 
               return (
@@ -2085,7 +2590,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                     <div className="flex items-center gap-4 sm:gap-6 flex-wrap">
                       <div className="text-right font-mono">
                         <span className="text-[10px] text-slate-500 uppercase block">Tamanho Alocado</span>
-                        <span className="text-sm font-bold text-slate-300">${pos.sizeUsd.toFixed(2)}</span>
+                        <span className="text-sm font-bold text-slate-300">${sizeUsd.toFixed(2)}</span>
                       </div>
 
                       <div className="text-right font-mono">
@@ -2095,7 +2600,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         </span>
                         <span className="text-[9.5px] block font-bold">
                           {pos.trailingLockedProfitUsd && pos.trailingLockedProfitUsd > 0 ? (
-                            <span className="text-emerald-400">🛡️ +${pos.trailingLockedProfitUsd.toFixed(2)} travado</span>
+                            <span className="text-emerald-400">🛡️ +${(pos.trailingLockedProfitUsd || 0).toFixed(2)} travado</span>
                           ) : pos.currentStopLoss === pos.entryPrice || pos.trailingStepsCount === 1 ? (
                             <span className="text-cyan-400">🛡️ Breakeven (0 risco)</span>
                           ) : (
@@ -2115,15 +2620,15 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         <span className="text-[10px] text-slate-500 uppercase block">Tempo Decorrido</span>
                         <span className={`text-sm font-bold flex items-center justify-end gap-1 ${isTimeMgmtEnabled && isTimeExceeded ? 'text-amber-400 animate-pulse' : 'text-slate-300'}`}>
                           <Timer className="w-3 h-3 text-slate-400" />
-                          {formattedDuration} / {maxMinutes}:00 min
+                          {formattedDuration} / {maxMinutesFormatted} min
                         </span>
                       </div>
 
                       <div className="text-right font-mono">
                         <span className="text-[10px] text-slate-500 uppercase block">PnL Não Realizado</span>
                         <span className={`text-lg font-black ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {isProfit ? '+' : ''}${pos.unrealizedPnlUsd.toFixed(2)}
-                          <span className="text-[11px] block text-right font-bold opacity-80">({isProfit ? '+' : ''}{pos.unrealizedPnlPct.toFixed(2)}%)</span>
+                          {isProfit ? '+' : ''}${unrealizedPnlUsd.toFixed(2)}
+                          <span className="text-[11px] block text-right font-bold opacity-80">({isProfit ? '+' : ''}{unrealizedPnlPct.toFixed(2)}%)</span>
                         </span>
                       </div>
 
@@ -2151,16 +2656,22 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         {/* Time Management Alert / Badge */}
                         {isTimeMgmtEnabled ? (
                           isTimeExceeded ? (
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ml-1 ${
-                              isReadyForTimeExit 
-                                ? 'bg-emerald-950 text-emerald-300 border-emerald-700 animate-pulse' 
-                                : 'bg-amber-950 text-amber-300 border-amber-700'
-                            }`}>
-                              ⏱️ Tempo {elapsedMins}min &gt; {maxMinutes}min: {isReadyForTimeExit ? `+US$ ${pos.unrealizedPnlUsd.toFixed(2)} ≥ +3¢ (Finalizando no lucro)` : 'Aguardando atingir +3¢ para encerramento'}
-                            </span>
+                            pos.unrealizedPnlUsd >= 0.03 ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold border ml-1 bg-emerald-950/80 text-emerald-300 border-emerald-600/80 flex items-center gap-1">
+                                🛡️ Tempo {formattedDuration} ≥ {maxMinutesLabel}: Lucro +US$ {pos.unrealizedPnlUsd.toFixed(2)} (≥ +3¢) ➔ Tempo Ignorado (Protegida)
+                              </span>
+                            ) : pos.unrealizedPnlUsd >= 0.00 ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold border ml-1 bg-amber-950/80 text-amber-300 border-amber-600/80 animate-pulse">
+                                ⏱️ Tempo {formattedDuration} ≥ {maxMinutesLabel}: Lucro +US$ {pos.unrealizedPnlUsd.toFixed(2)} (≥ 0¢) ➔ Finalizando 0¢ Positivo
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold border ml-1 bg-blue-950/80 text-blue-300 border-blue-600/80">
+                                🛡️ Tempo {formattedDuration} ≥ {maxMinutesLabel}: Prejuízo -US$ {Math.abs(pos.unrealizedPnlUsd).toFixed(2)} ➔ Não Encerra no Prejuízo (Aguardando ≥ 0¢)
+                              </span>
+                            )
                           ) : (
                             <span className="text-[10px] text-slate-500 ml-1">
-                              (⏱️ {formattedDuration} de {maxMinutes}m)
+                              (⏱️ {formattedDuration} de {maxMinutesLabel})
                             </span>
                           )
                         ) : (
@@ -2348,13 +2859,33 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                 <span className="flex items-center gap-1 text-slate-300">
                   <Timer className="w-3.5 h-3.5 text-amber-400" /> Ciclo Pareto & Varredura
                 </span>
-                <span className="px-1.5 py-0.2 rounded font-bold text-[9px] bg-amber-950 text-amber-300">
-                  LOOP 4s
+                <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
+                  isParetoCyclePaused ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                }`}>
+                  {isParetoCyclePaused ? 'PAUSADO' : 'LOOP 4s'}
                 </span>
               </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-sm font-black text-amber-300">{formattedCycleTime}</span>
-                <span className="text-[10px] text-slate-400">{isScanningNow ? 'Varrendo agora...' : 'Varredura ativa'}</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-black ${isParetoCyclePaused ? 'text-amber-500/70 line-through' : 'text-amber-300'}`}>
+                    {formattedCycleTime} {isParetoCyclePaused && '(Pausado)'}
+                  </span>
+                  <button
+                    onClick={() => setIsParetoCyclePaused(!isParetoCyclePaused)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer ${
+                      isParetoCyclePaused
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-amber-600 hover:bg-amber-500 text-white'
+                    }`}
+                    title={isParetoCyclePaused ? 'Retomar Ciclo Pareto e Varredura' : 'Pausar Ciclo Pareto e Varredura'}
+                  >
+                    {isParetoCyclePaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                    {isParetoCyclePaused ? 'Retomar' : 'Pausar'}
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400">
+                  {isParetoCyclePaused ? 'Varredura suspensa' : isScanningNow ? 'Varrendo agora...' : 'Varredura ativa'}
+                </span>
               </div>
             </div>
           </div>
@@ -2367,11 +2898,11 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                   <Zap className="w-4 h-4 text-emerald-400 animate-pulse" />
                 </span>
                 <span className="text-[11px] text-slate-200 font-sans">
-                  <strong className="text-emerald-400 font-mono font-bold">DISPARO AUTOMÁTICO IMEDIATO ATIVO:</strong> Ao satisfazer simultaneamente as <strong>4 verificações</strong> (100% dos gatilhos), o robô abre a ordem <strong>instantaneamente a mercado</strong> com gestão de risco e trailing stop dinâmico (6¢ ➔ 3¢ / 30¢ ➔ 15¢).
+                  <strong className="text-emerald-400 font-mono font-bold">DISPARO AUTOMÁTICO IMEDIATO ATIVO:</strong> Ao satisfazer simultaneamente as <strong>8 verificações</strong> (100% dos gatilhos), o robô abre a ordem <strong>instantaneamente a mercado</strong> com gestão de risco e trailing stop dinâmico (6¢ ➔ 3¢ / 30¢ ➔ 15¢).
                 </span>
               </div>
               <span className="text-[10px] shrink-0 font-bold px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-600/60 uppercase font-mono">
-                4/4 = Execução Imediata
+                8/8 = Execução Imediata
               </span>
             </div>
 
@@ -2484,7 +3015,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                             item.readinessPct >= 75 ? 'text-emerald-300' :
                             item.readinessPct >= 50 ? 'text-amber-400' : 'text-slate-400'
                           }>
-                            {isOpen ? 'ORDEM ABERTA' : `${item.readinessPct}% (${item.checksMetCount}/4 Gatilhos)`}
+                            {isOpen ? 'ORDEM ABERTA' : `${item.readinessPct}% (${item.checksMetCount}/8 Gatilhos)`}
                           </span>
                         </div>
                         <div className="w-full bg-slate-900 rounded-full h-1.5 border border-slate-800 overflow-hidden">
@@ -2499,7 +3030,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         </div>
                       </div>
 
-                      {/* 4 Triggers Diagnostic Checklist */}
+                      {/* 8 Triggers Diagnostic Checklist */}
                       <div className="mt-2.5 space-y-1 text-[10px] font-mono">
                         {/* Trigger 1: Dupla Chancela */}
                         <div className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 ${
@@ -2560,6 +3091,68 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                             {item.check4_CapacityAndMargin ? `Livre (${openPositions.length}/3)` : '3/3 Preenchido'}
                           </span>
                         </div>
+
+                        {/* Trigger 5: Filtro Anti-Armadilha */}
+                        <div className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 ${
+                          item.check5_AntiTrap 
+                            ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' 
+                            : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
+                        }`}>
+                          <span className="flex items-center gap-1 truncate">
+                            {item.check5_AntiTrap ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <ShieldAlert className="w-3 h-3 text-rose-400 shrink-0" />}
+                            <span>5. Filtro Anti-Armadilha</span>
+                          </span>
+                          <span className="font-bold shrink-0 text-[9.5px]">
+                            {item.check5_AntiTrap ? 'Distância Segura' : 'Alerta de Proximidade'}
+                          </span>
+                        </div>
+
+                        {/* Trigger 6: Desbalanço de Capital HFT (IA de Alto Fluxo) */}
+                        <div className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 ${
+                          item.check6_CapitalImbalance 
+                            ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' 
+                            : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
+                        }`}>
+                          <span className="flex items-center gap-1 truncate">
+                            {item.check6_CapitalImbalance ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <ShieldAlert className="w-3 h-3 text-rose-400 shrink-0" />}
+                            <span>6. Desbalanço de Capital HFT</span>
+                          </span>
+                          <span className="font-bold shrink-0 text-[9.5px]">
+                            {item.check6_CapitalImbalance ? `Dominante (${item.capitalDominantSide})` : 'Divergente / Neutro'}
+                          </span>
+                        </div>
+
+                        {/* Trigger 7: Deslocamento de Preço HFT (IA de Alto Fluxo) */}
+                        <div className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 ${
+                          item.check7_PriceDisplacement 
+                            ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' 
+                            : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
+                        }`}>
+                          <span className="flex items-center gap-1 truncate">
+                            {item.check7_PriceDisplacement ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <ShieldAlert className="w-3 h-3 text-rose-400 shrink-0" />}
+                            <span>7. Deslocamento de Preço HFT</span>
+                          </span>
+                          <span className="font-bold shrink-0 text-[9.5px]">
+                            {item.check7_PriceDisplacement ? `Movimento Ativo (${(item.sparklineRangePct || 0).toFixed(2)}%)` : 'Preço Travado'}
+                          </span>
+                        </div>
+
+                        {/* Trigger 8: Agressão Ativa no Time & Trades / Fita HFT (IA de Fita & Quota-Zero) */}
+                        <div className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 ${
+                          item.check8_TapeAggression 
+                            ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' 
+                            : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
+                        }`}>
+                          <span className="flex items-center gap-1 truncate">
+                            {item.check8_TapeAggression ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <ShieldAlert className="w-3 h-3 text-rose-400 shrink-0" />}
+                            <span>8. Agressão Ativa na Fita (Time & Trades)</span>
+                          </span>
+                          <span className="font-bold shrink-0 text-[9.5px]">
+                            {item.check8_TapeAggression 
+                              ? `Agressão OK (${item.side === 'LONG' ? item.tapeBuyAggressionPct : item.tapeSellAggressionPct}% a favor)` 
+                              : 'Agressão Contrária'}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Pending Details Box (Explaining exact reasons waiting) */}
@@ -2593,7 +3186,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         <div className="p-2 rounded-lg bg-emerald-950/90 border border-emerald-500 text-center shadow-lg shadow-emerald-950/50">
                           <span className="text-[10.5px] font-black text-emerald-300 flex items-center justify-center gap-1.5 animate-pulse">
                             <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                            ⚡ 4/4 GATILHOS ATENDIDOS (100%) → EXECUTANDO EM AUTOMÁTICO IMEDIATO...
+                            ⚡ GATILHOS 8/8 ATENDIDOS (100%) → EXECUTANDO EM AUTOMÁTICO IMEDIATO...
                           </span>
                         </div>
                       ) : (
@@ -2605,18 +3198,56 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                         </div>
                       )}
 
-                      {/* Manual Trigger Option */}
+                      {/* Trigger Actions (Armar Gatilho na Fita / Forçar Disparo) */}
                       {!isOpen && (
-                        <button
-                          type="button"
-                          onClick={() => handleExecuteTop3Directly(item as any)}
-                          disabled={isScanningNow}
-                          className="w-full py-1.5 px-3 rounded-lg text-[10.5px] font-bold transition flex items-center justify-center gap-1.5 bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-white border border-slate-800 hover:border-indigo-500/50"
-                          title="Permite disparar a ordem no ativo imediatamente com dimensionamento automático de risco"
-                        >
-                          <Zap className="w-3 h-3 text-indigo-400" />
-                          <span>Forçar Disparo {isLong ? 'Compra (LONG)' : 'Venda (SHORT)'} Imediato</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {(() => {
+                            const symbolArmedTrigger = armedTriggers.find(t => t.symbol === item.symbol && t.status === 'ARMED');
+                            if (symbolArmedTrigger) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelTrigger(symbolArmedTrigger.id)}
+                                  className="flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold bg-cyan-950/80 hover:bg-rose-950/80 text-cyan-300 hover:text-rose-300 border border-cyan-500/50 hover:border-rose-500/50 transition flex items-center justify-center gap-1"
+                                  title="Gatilho ativo monitorando agressão no Time & Trades. Clique para desarmar."
+                                >
+                                  <Zap className="w-3 h-3 text-cyan-400 animate-pulse" />
+                                  <span>⚡ Gatilho Armado (✕ Desarmar)</span>
+                                </button>
+                              );
+                            }
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleArmTrigger(
+                                  item.symbol, 
+                                  isLong ? 'LONG' : 'SHORT', 
+                                  quickArmSizeUsd, 
+                                  quickArmLeverage, 
+                                  quickArmTriggerMode, 
+                                  quickArmMinVolume, 
+                                  quickArmAutoRearm
+                                )}
+                                className="flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold bg-cyan-950/50 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-500/40 transition flex items-center justify-center gap-1"
+                                title="Arma gatilho para aguardar confirmação de agressão no Time & Trades antes de entrar"
+                              >
+                                <Zap className="w-3 h-3 text-cyan-400" />
+                                <span>⚡ Armar Gatilho</span>
+                              </button>
+                            );
+                          })()}
+
+                          <button
+                            type="button"
+                            onClick={() => handleExecuteTop3Directly(item as any)}
+                            disabled={isScanningNow}
+                            className="flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 hover:border-indigo-500/50"
+                            title="Dispara a ordem imediatamente a mercado"
+                          >
+                            <Crosshair className="w-3 h-3 text-indigo-400" />
+                            <span>Forçar Imediato</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -2690,7 +3321,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <History className="w-4 h-4 text-slate-400" />
-              <h3 className="font-mono text-sm font-bold text-slate-300 uppercase">Histórico Recente de Fechamentos</h3>
+              <h3 className="font-mono text-sm font-bold text-slate-300 uppercase">Histórico Recente de Fechamentos ({closedPositions.length})</h3>
             </div>
             <button 
               type="button"
@@ -2700,35 +3331,85 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
               Limpar Histórico
             </button>
           </div>
-          <div className="overflow-x-auto">
+
+          {/* Analisador de Desempenho (Acertividade) */}
+          <div className="mb-4 p-4 rounded-xl border border-slate-700/60 bg-[#0f1117] grid grid-cols-1 md:grid-cols-3 gap-4 shadow-inner">
+            <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-slate-800/30 border border-slate-700/30">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Target className="w-3.5 h-3.5 text-indigo-400" />
+                Acertividade Global
+              </span>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span className="text-2xl font-black font-mono text-indigo-300">{performanceStats.accuracyPct}%</span>
+                <span className="text-xs text-slate-500 font-mono font-medium">({performanceStats.winningTrades}/{performanceStats.totalTrades} Wins)</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-emerald-950/20 border border-emerald-900/30">
+              <span className="text-[10px] font-bold text-emerald-400/80 uppercase tracking-wider flex items-center gap-1.5">
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> 
+                Melhor Horário
+              </span>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span className="text-lg font-bold font-mono text-emerald-300">{performanceStats.bestHourStr}</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
+                  {performanceStats.bestHourAcc}% Acerto
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-rose-950/20 border border-rose-900/30">
+              <span className="text-[10px] font-bold text-rose-400/80 uppercase tracking-wider flex items-center gap-1.5">
+                <TrendingDown className="w-3.5 h-3.5 text-rose-400" /> 
+                Pior Horário
+              </span>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span className="text-lg font-bold font-mono text-rose-300">{performanceStats.worstHourStr}</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono">
+                  {performanceStats.worstHourAcc}% Acerto
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="max-h-80 overflow-y-auto overflow-x-auto rounded-xl border border-slate-800/80 bg-[#090b0e] p-2 scrollbar-thin scrollbar-thumb-slate-700">
             <table className="w-full text-left font-mono text-[11px] text-slate-400 whitespace-nowrap">
-              <thead className="border-b border-slate-800 text-slate-500">
+              <thead className="sticky top-0 bg-[#090b0e] border-b border-slate-800 text-slate-400 z-10 shadow-sm">
                 <tr>
-                  <th className="pb-2">Ativo</th>
-                  <th className="pb-2">Side</th>
-                  <th className="pb-2">Fechamento (Motivo)</th>
-                  <th className="pb-2 text-right">PnL Realizado</th>
+                  <th className="py-2 px-2 text-slate-400 font-bold">Data & Hora</th>
+                  <th className="py-2 px-2 text-slate-400 font-bold">Ativo</th>
+                  <th className="py-2 px-2 text-slate-400 font-bold">Side</th>
+                  <th className="py-2 px-2 text-slate-400 font-bold">Fechamento (Motivo)</th>
+                  <th className="py-2 px-2 text-right text-slate-400 font-bold">PnL Realizado</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {closedPositions.map(pos => (
-                  <tr key={pos.id} className="hover:bg-slate-900/50">
-                    <td className="py-2 text-slate-300 font-bold">{pos.symbol}</td>
-                    <td className={`py-2 font-bold ${pos.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>{pos.side}</td>
-                    <td className="py-2">
-                      <span className={`inline-flex items-center gap-1 ${pos.closeReason === 'TAKE_PROFIT' || pos.closeReason === 'TIME_EXPIRATION' || (pos.closeReason === 'TRAILING_STOP' && pos.realizedPnlUsd > 0) ? 'text-emerald-400 font-bold' : 'text-slate-300'}`}>
-                        {pos.closeReason === 'TRAILING_STOP' ? (pos.realizedPnlUsd > 0 ? `🛡️ Trailing Stop (Travado: +$${pos.realizedPnlUsd.toFixed(2)})` : '🛡️ Trailing Stop (Breakeven Risco Zero)') : 
-                         pos.closeReason === 'STOP_LOSS' ? 'Stop Loss Acionado' : 
-                         pos.closeReason === 'TAKE_PROFIT' ? '🎯 Take Profit (+10¢ Scalper)' : 
-                         pos.closeReason === 'TIME_EXPIRATION' ? '⏱️ Tempo Limite (5 min +3¢)' :
-                         pos.closeReason === 'AI_DIVERGENCE' ? '🤖 Divergência IA' : 'Manual'}
-                      </span>
-                    </td>
-                    <td className={`py-2 text-right font-black ${pos.realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {pos.realizedPnlUsd >= 0 ? '+' : ''}${pos.realizedPnlUsd.toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
+                {closedPositions.map(pos => {
+                  const eventTime = pos.closeTime || pos.openTime;
+                  const dateStr = eventTime ? new Date(eventTime).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '--/--/--';
+                  const timeStr = eventTime ? new Date(eventTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--';
+                  const realizedPnlUsd = pos.realizedPnlUsd ?? 0;
+
+                  return (
+                    <tr key={pos.id} className="hover:bg-slate-900/60 transition-colors">
+                      <td className="py-2 px-2 text-slate-300 font-medium font-mono">
+                        <span className="text-slate-200">{dateStr}</span> <span className="text-slate-400 text-[10px]">{timeStr}</span>
+                      </td>
+                      <td className="py-2 px-2 text-slate-200 font-bold">{pos.symbol}</td>
+                      <td className={`py-2 px-2 font-bold ${pos.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>{pos.side}</td>
+                      <td className="py-2 px-2">
+                        <span className={`inline-flex items-center gap-1 ${pos.closeReason === 'TAKE_PROFIT' || pos.closeReason === 'TIME_EXPIRATION' || (pos.closeReason === 'TRAILING_STOP' && realizedPnlUsd > 0) ? 'text-emerald-400 font-bold' : 'text-slate-300'}`}>
+                          {pos.closeReason === 'TRAILING_STOP' ? (realizedPnlUsd > 0 ? `🛡️ Trailing Stop (Travado: +$${realizedPnlUsd.toFixed(2)})` : '🛡️ Trailing Stop (Breakeven Risco Zero)') : 
+                           pos.closeReason === 'STOP_LOSS' ? 'Stop Loss Acionado' : 
+                           pos.closeReason === 'TAKE_PROFIT' ? '🎯 Take Profit (+10¢ Scalper)' : 
+                           pos.closeReason === 'TIME_EXPIRATION' ? `⏱️ Tempo Limite (${(pos.maxOperationTimeMinutes || 1.5) === 1.5 ? '1m 30s' : `${pos.maxOperationTimeMinutes} min`} / 0¢ Positivo)` :
+                           pos.closeReason === 'AI_DIVERGENCE' ? '🤖 Divergência IA' : 'Manual'}
+                        </span>
+                      </td>
+                      <td className={`py-2 px-2 text-right font-black ${realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {realizedPnlUsd >= 0 ? '+' : ''}${realizedPnlUsd.toFixed(2)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
