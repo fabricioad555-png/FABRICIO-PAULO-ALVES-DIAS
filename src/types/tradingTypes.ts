@@ -4,7 +4,7 @@ export type CloseReason = 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MANUA
 
 export type MarketReversalPolicy = 'AUTO_CLOSE' | 'TIGHTEN_STOP' | 'AUTO_FLIP' | 'ALERT_ONLY';
 
-export type OrderTriggerMode = 'INSTANT_AGGRESSION' | 'WHALE_VOLUME' | 'CONFLUENCE_DUAL';
+export type OrderTriggerMode = 'INSTANT_AGGRESSION' | 'WHALE_VOLUME' | 'CONFLUENCE_DUAL' | 'DISPLACEMENT_AI';
 
 export interface ArmedOrderTrigger {
   id: string;
@@ -105,7 +105,37 @@ export interface TradePosition {
 
 export type AssetSelectionMode = 'TOP_3_PROBABILITY' | 'ALL_ASSETS' | 'CUSTOM';
 
+export type OperationMode = 'DEMO' | 'REAL';
+
+export interface BinanceAssetBalance {
+  asset: string;
+  free: number;
+  locked: number;
+  total: number;
+  estimatedUsdt?: number;
+}
+
+export interface BinanceApiConfig {
+  apiKey: string;
+  apiSecret: string;
+  environment: 'mainnet' | 'testnet' | 'binance_us' | 'binance_pt';
+  accountType: 'SPOT' | 'FUTURES';
+  isConnected: boolean;
+  isVerified?: boolean;
+  lastVerifiedAt?: number;
+  proxyUrl?: string;
+  serverCluster?: 'api.binance.com' | 'api1.binance.com' | 'api2.binance.com' | 'api3.binance.com' | 'api4.binance.com';
+  lastConnectedAt?: number;
+  accountBalanceUsdt?: number;
+  assetsBreakdown?: BinanceAssetBalance[];
+  pingMs?: number;
+  permissions?: string[];
+  lastError?: string;
+}
+
 export interface TradingAccount {
+  operationMode?: OperationMode; // 'DEMO' (default) or 'REAL'
+  binanceConfig?: BinanceApiConfig;
   demoBalanceUsd: number;
   availableMarginUsd: number;
   totalRealizedPnlUsd: number;
@@ -124,6 +154,8 @@ export interface TradingAccount {
   isAiDivergenceExitEnabled?: boolean; // Whether closing orders on AI Divergence (< 1 cent) is active (default: true)
   reentryCooldownSeconds?: number; // Cooldown for repurchasing same crypto after position closes (default: 20s. Options: 20, 60, 180, 300, 600)
   isAggressionTriggerEnabled?: boolean; // Liberar ordem somente se agressão no Time & Trades for a favor da ordem (default: true)
+  isOneMin75AggressionGateEnabled?: boolean; // Gatilho de agressões >75% em 1 minuto a favor da ordem (default: true)
+  minConfluenceScore?: number; // Meta de Confluência Sniper em % (default: 75)
 
   // Market Direction Reversal Management (Sistema Ponderado 14% / 86% - BTC)
   marketReversalPolicy?: MarketReversalPolicy; // 'AUTO_CLOSE' (default), 'TIGHTEN_STOP', 'AUTO_FLIP', 'ALERT_ONLY'

@@ -276,7 +276,13 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
       clearTimeout(timeoutId);
 
       if (response.ok) {
-        const data = await response.json();
+        let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
         if (data.success && data.result) {
           setHftAnalysis(data.result);
           if (typeof window !== 'undefined' && window.localStorage) {

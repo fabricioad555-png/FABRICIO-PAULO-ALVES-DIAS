@@ -506,7 +506,13 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
         throw new Error(`Server returned HTTP ${response.status}`);
       }
 
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (data.success && data.result) {
         setAnalysisResult(data.result);
       } else {

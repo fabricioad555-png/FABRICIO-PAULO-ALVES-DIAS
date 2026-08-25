@@ -1,4 +1,4 @@
-import { TimesAndTradeRow, TimesAndTradesAiAnalysis, TapeEscalationDetail } from '../types/orderFlowTypes';
+import { TimesAndTradeRow, TimesAndTradesAiAnalysis, TapeEscalationDetail, OneMinute75AggressionGate } from '../types/orderFlowTypes';
 
 export interface HftOrderBookSignal {
   signal: 'COMPRA' | 'VENDA' | 'NEUTRO';
@@ -254,17 +254,22 @@ export function analyzeTimesAndTradesTapeAi(
     dominantAggression = 'SELL';
   }
 
-  // 5. GATILHO DE EXECUÇÃO: LIBERAR ORDEM SOMENTE SE AGRESSÃO FOR A FAVOR
-  // - Ordem LONG (Compra): Liberada somente se a agressão for compradora (comprador comprando mais caro ou compra dominante). Bloqueada se vendedor estiver vendendo mais barato.
-  // - Ordem SHORT (Venda): Liberada somente se a agressão for vendedora (vendedor vendendo mais barato ou venda dominante). Bloqueada se comprador estiver comprando mais caro.
+  // 5. GATILHO DE EXECUÇÃO: LIBERAR ORDEM SOMENTE SE MAIOR AGRESSOR EM 1-MIN FOR A FAVOR (>75% DE FORÇA)
+  const oneMin75Gate = compute1Min75AggressionGate(trades);
+
   let isLongAllowed = false;
   let reasonLong = '';
-  if (isBuyerSweeping) {
+  if (isBuyerSweeping || oneMin75Gate.isLongAllowed) {
     isLongAllowed = true;
-    reasonLong = `🟢 GATILHO COMPRADOR OK: Compradores comprovadamente comprando mais caro no Ask (+US$ ${buyerDiffUsd.toFixed(4)}). Agressão 100% a favor da Compra!`;
+    reasonLong = isBuyerSweeping
+      ? `🟢 GATILHO COMPRADOR OK: Compradores comprovadamente comprando mais caro no Ask (+US$ ${buyerDiffUsd.toFixed(4)}). Agressão 100% a favor da Compra!`
+      : oneMin75Gate.reasonLong;
   } else if (isSellerSweeping) {
     isLongAllowed = false;
     reasonLong = `🔴 GATILHO COMPRADOR BLOQUEADO: Vendedores estão vendendo mais barato no Bid (-US$ ${sellerDiffUsd.toFixed(4)}). Agressão está contrária à Compra!`;
+  } else if (!oneMin75Gate.isLongAllowed) {
+    isLongAllowed = false;
+    reasonLong = oneMin75Gate.reasonLong;
   } else if (buyAggressionPct >= 50) {
     isLongAllowed = true;
     reasonLong = `🟢 GATILHO COMPRADOR OK: Volume de agressão compradora no Tape (${buyAggressionPct}%) é favorável à Compra.`;
@@ -275,12 +280,17 @@ export function analyzeTimesAndTradesTapeAi(
 
   let isShortAllowed = false;
   let reasonShort = '';
-  if (isSellerSweeping) {
+  if (isSellerSweeping || oneMin75Gate.isShortAllowed) {
     isShortAllowed = true;
-    reasonShort = `🔴 GATILHO VENDEDOR OK: Vendedores comprovadamente vendendo mais barato no Bid (-US$ ${sellerDiffUsd.toFixed(4)}). Agressão 100% a favor da Venda!`;
+    reasonShort = isSellerSweeping
+      ? `🔴 GATILHO VENDEDOR OK: Vendedores comprovadamente vendendo mais barato no Bid (-US$ ${sellerDiffUsd.toFixed(4)}). Agressão 100% a favor da Venda!`
+      : oneMin75Gate.reasonShort;
   } else if (isBuyerSweeping) {
     isShortAllowed = false;
     reasonShort = `🟢 GATILHO VENDEDOR BLOQUEADO: Compradores estão comprando mais caro no Ask (+US$ ${buyerDiffUsd.toFixed(4)}). Agressão está contrária à Venda!`;
+  } else if (!oneMin75Gate.isShortAllowed) {
+    isShortAllowed = false;
+    reasonShort = oneMin75Gate.reasonShort;
   } else if (sellAggressionPct >= 50) {
     isShortAllowed = true;
     reasonShort = `🔴 GATILHO VENDEDOR OK: Volume de agressão vendedora no Tape (${sellAggressionPct}%) é favorável à Venda.`;
@@ -293,13 +303,17 @@ export function analyzeTimesAndTradesTapeAi(
     ? `🟢 Fluxo de Alta Ativo: Compradores pagando mais caro (+US$ ${buyerDiffUsd.toFixed(4)})`
     : isSellerSweeping
     ? `🔴 Fluxo de Baixa Ativo: Vendedores vendendo mais barato (-US$ ${sellerDiffUsd.toFixed(4)})`
+    : oneMin75Gate.isStrengthAbove75Pct
+    ? `⚡ Fluxo 1-Min Dominação: ${oneMin75Gate.badgeText}`
     : `⚪ Fluxo em Equilíbrio (${buyAggressionPct}% Compra / ${sellAggressionPct}% Venda)`;
 
   const summaryAiInsight = isBuyerSweeping
     ? `IA Tape Reading: Agressão institucional compradora dominante com avanço progressivo de preços no Ask. Condição ideal para abertura de ordens LONG com gatilho a favor.`
     : isSellerSweeping
     ? `IA Tape Reading: Agressão institucional vendedora dominante com recuo progressivo de preços no Bid. Condição ideal para abertura de ordens SHORT com gatilho a favor.`
-    : `IA Tape Reading: Mercado oscilando com agressões divididas. O gatilho de execução protege a entrada aguardando direcionamento claro do fluxo.`;
+    : oneMin75Gate.isStrengthAbove75Pct
+    ? `IA Tape Reading: Gatilho de 1 minuto acionado com ${oneMin75Gate.majorAggressor === 'BUY' ? oneMin75Gate.buyForcePct : oneMin75Gate.sellForcePct}% de força a favor da tendência.`
+    : `IA Tape Reading: Mercado oscilando com agressões divididas. O gatilho de execução protege a entrada aguardando direcionamento claro do fluxo (>75% de força em 1min).`;
 
   return {
     symbol: sym,
@@ -333,6 +347,7 @@ export function analyzeTimesAndTradesTapeAi(
       description: sellerDescription,
       aiDiagnosis: sellerDiagnosis
     },
+    oneMinute75AggressionGate: oneMin75Gate,
     executionGate: {
       isLongAllowed,
       isShortAllowed,
@@ -341,6 +356,96 @@ export function analyzeTimesAndTradesTapeAi(
       activeBiasMessage
     },
     summaryAiInsight
+  };
+}
+
+/**
+ * Calculador de Gatilho de Agressões em 1 Minuto (>75% de Força)
+ * Analisa quantas agressões a favor da tendência aconteceram nos últimos 60 segundos.
+ * Libera a ordem apenas se o maior agressor tiver força > 75% a favor da ordem.
+ */
+export function compute1Min75AggressionGate(trades: TimesAndTradeRow[] = []): OneMinute75AggressionGate {
+  const nowMs = Date.now();
+  const validTrades = Array.isArray(trades) ? trades : [];
+
+  const trades1Min = validTrades.filter(t => {
+    if (!t || !t.timestamp) return true;
+    const tMs = new Date(t.timestamp).getTime();
+    return isNaN(tMs) || (nowMs - tMs) <= 60000;
+  });
+
+  const tradesToUse = trades1Min.length >= 3 ? trades1Min : validTrades.slice(0, 30);
+  
+  let buyTrades1Min = 0;
+  let sellTrades1Min = 0;
+  let buyVolume1MinUsd = 0;
+  let sellVolume1MinUsd = 0;
+
+  for (const t of tradesToUse) {
+    const vol = t.totalUsd && t.totalUsd > 0 ? t.totalUsd : (t.amount && t.price ? t.amount * t.price : 100);
+    if (t.aggressor === 'BUY') {
+      buyTrades1Min++;
+      buyVolume1MinUsd += vol;
+    } else {
+      sellTrades1Min++;
+      sellVolume1MinUsd += vol;
+    }
+  }
+
+  const totalTrades1Min = buyTrades1Min + sellTrades1Min;
+  const totalVolume1MinUsd = buyVolume1MinUsd + sellVolume1MinUsd || 1;
+
+  const buyForcePct = Math.round((buyVolume1MinUsd / totalVolume1MinUsd) * 100);
+  const sellForcePct = 100 - buyForcePct;
+
+  let majorAggressor: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  if (buyForcePct > sellForcePct) majorAggressor = 'BUY';
+  else if (sellForcePct > buyForcePct) majorAggressor = 'SELL';
+
+  const isStrengthAbove75Pct = buyForcePct >= 75 || sellForcePct >= 75;
+
+  const isLongAllowed = majorAggressor === 'BUY' && buyForcePct >= 75 && buyTrades1Min > 0;
+  const isShortAllowed = majorAggressor === 'SELL' && sellForcePct >= 75 && sellTrades1Min > 0;
+
+  let reasonLong = '';
+  if (isLongAllowed) {
+    reasonLong = `🟢 GATILHO 1-MIN (>75% FORÇA): ${buyTrades1Min} agressões de COMPRA (força de ${buyForcePct}%) no último 1 minuto. Maior agressor COMPRADOR a favor da ordem!`;
+  } else if (majorAggressor === 'BUY') {
+    reasonLong = `🔴 GATILHO 1-MIN BLOQUEADO: Força compradora em 1-min (${buyForcePct}%) é inferior aos 75% requeridos.`;
+  } else {
+    reasonLong = `🔴 GATILHO 1-MIN BLOQUEADO: Maior agressor em 1-min é VENDEDOR (${sellForcePct}%). Ordem de COMPRA bloqueada por ser contra a tendência.`;
+  }
+
+  let reasonShort = '';
+  if (isShortAllowed) {
+    reasonShort = `🔴 GATILHO VENDEDOR 1-MIN (>75% FORÇA): ${sellTrades1Min} agressões de VENDA (força de ${sellForcePct}%) no último 1 minuto. Maior agressor VENDEDOR a favor da ordem!`;
+  } else if (majorAggressor === 'SELL') {
+    reasonShort = `🔴 GATILHO 1-MIN BLOQUEADO: Força vendedora em 1-min (${sellForcePct}%) é inferior aos 75% requeridos.`;
+  } else {
+    reasonShort = `🔴 GATILHO 1-MIN BLOQUEADO: Maior agressor em 1-min é COMPRADOR (${buyForcePct}%). Ordem de VENDA bloqueada por ser contra a tendência.`;
+  }
+
+  const badgeText = isLongAllowed
+    ? `🟢 GATILHO 1-MIN OK: COMPRADOR DOMINANTE (${buyForcePct}% > 75%)`
+    : isShortAllowed
+    ? `🔴 GATILHO 1-MIN OK: VENDEDOR DOMINANTE (${sellForcePct}% > 75%)`
+    : `⚡ FLUXO 1-MIN AGUARDANDO FORÇA >75% (C: ${buyForcePct}% / V: ${sellForcePct}%)`;
+
+  return {
+    totalTrades1Min,
+    buyTrades1Min,
+    sellTrades1Min,
+    buyVolume1MinUsd,
+    sellVolume1MinUsd,
+    buyForcePct,
+    sellForcePct,
+    majorAggressor,
+    isStrengthAbove75Pct,
+    isLongAllowed,
+    isShortAllowed,
+    reasonLong,
+    reasonShort,
+    badgeText
   };
 }
 

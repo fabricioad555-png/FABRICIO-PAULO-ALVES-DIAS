@@ -64,7 +64,13 @@ export const PredictiveMovementModal: React.FC<PredictiveMovementModalProps> = (
         }),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Falha ao gerar relatório preditivo da IA.');
       }

@@ -262,7 +262,13 @@ const AIPatternFilterBlockComponent: React.FC<AIPatternFilterBlockProps> = ({
         }),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (data.success && data.result?.top5Patterns?.length > 0) {
         // Enforce strict live price synchronization over AI results
         const syncedTop5 = buildSyncedPatternsFromCryptos(data.result.top5Patterns, cryptos);

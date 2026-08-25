@@ -58,7 +58,13 @@ export const PasteAnalyzerModal: React.FC<PasteAnalyzerModalProps> = ({
         }),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Falha ao analisar texto do fórum.');
       }

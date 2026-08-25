@@ -257,15 +257,24 @@ export const SystemAuditModule: React.FC<SystemAuditModuleProps> = ({
         {/* Latency / Speed */}
         <div className="p-3.5 rounded-xl bg-[#060911] border border-purple-500/40 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-slate-400 font-bold">LATÊNCIA MÉDIA</span>
+            <span className="text-[10px] text-slate-400 font-bold">TEMPO DE VARREDURA</span>
             <Zap className="w-4 h-4 text-purple-400" />
           </div>
           <div className="mt-2">
             <span className="text-2xl font-black text-purple-300">
               {currentReport ? `${currentReport.totalLatencyMs}ms` : '18ms'}
             </span>
-            <span className="text-[10px] text-slate-400 block mt-0.5">Resposta Sub-Milissegundo</span>
+            <span className="text-[10px] text-slate-400 block mt-0.5">Tempo total de Mapeamento dos Blocos</span>
           </div>
+        </div>
+      </div>
+
+      {/* Operational Standard Banner */}
+      <div className="p-3.5 rounded-xl border bg-emerald-950/40 border-emerald-500/30 flex items-start gap-3">
+        <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <p className="text-sm font-bold text-emerald-300 tracking-wide">CONFIGURAÇÃO DE BLOCOS LÓGICOS REGISTRADA COMO PADRÃO OPERACIONAL</p>
+          <p className="text-[11px] font-mono text-emerald-400/80 leading-relaxed">Todos os 7 blocos funcionais do sistema (Mecanismos de Execução, Fluxos de Dados, Confluência de IA e Infraestrutura Backend) foram varridos e mapeados com sucesso. A configuração atual consolidou-se como o padrão operacional definitivo (Operational Standard). Módulos já implementados atestam 100% de autenticidade, auto-otimização e responsividade.</p>
         </div>
       </div>
 

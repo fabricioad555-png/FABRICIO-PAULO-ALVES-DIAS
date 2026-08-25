@@ -169,6 +169,23 @@ export interface TapeEscalationDetail {
   aiDiagnosis: string;
 }
 
+export interface OneMinute75AggressionGate {
+  totalTrades1Min: number;
+  buyTrades1Min: number;
+  sellTrades1Min: number;
+  buyVolume1MinUsd: number;
+  sellVolume1MinUsd: number;
+  buyForcePct: number;
+  sellForcePct: number;
+  majorAggressor: 'BUY' | 'SELL' | 'NEUTRAL';
+  isStrengthAbove75Pct: boolean;
+  isLongAllowed: boolean;
+  isShortAllowed: boolean;
+  reasonLong: string;
+  reasonShort: string;
+  badgeText: string;
+}
+
 export interface TimesAndTradesAiAnalysis {
   symbol: string;
   timestamp: string;
@@ -177,6 +194,7 @@ export interface TimesAndTradesAiAnalysis {
   sellAggressionPct: number;
   buyerEscalation: TapeEscalationDetail; // Comprador comprando mais caro
   sellerEscalation: TapeEscalationDetail; // Vendedor vendendo mais barato
+  oneMinute75AggressionGate?: OneMinute75AggressionGate;
   executionGate: {
     isLongAllowed: boolean;
     isShortAllowed: boolean;

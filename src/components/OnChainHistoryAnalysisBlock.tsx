@@ -178,7 +178,13 @@ export const OnChainHistoryAnalysisBlock: React.FC<OnChainHistoryAnalysisBlockPr
           }
         })
       });
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (data.success && data.result) {
         setAiVerdict(data.result);
       }

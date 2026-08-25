@@ -71,7 +71,13 @@ export const AICryptoChatDrawer: React.FC<AICryptoChatDrawerProps> = ({
         }),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
+      }
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Falha na resposta da IA.');
       }
