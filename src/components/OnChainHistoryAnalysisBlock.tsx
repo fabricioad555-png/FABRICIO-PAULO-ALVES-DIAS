@@ -744,7 +744,7 @@ ${onChainHistory.summary12m.keyTakeaway12m}`;
 
                     <button
                       onClick={() => {
-                        const text = `=== AUDITORIA ON-CHAIN MASTER IA: ${selectedCrypto.symbol} ===\nScore Geral: ${aiVerdict?.overallScore || 92}/100\nVeredito: ${aiVerdict?.consensusSignal || 'FORTE COMPRA'}\nFase de Ciclo: ${aiVerdict?.macroCyclePhase}\n\nSíntese:\n${aiVerdict?.onChainSummary}\n\nEstratégia:\nZona Acúmulo: ${aiVerdict?.executionStrategy.idealAccumulationZone}\nInvalidação: ${aiVerdict?.executionStrategy.onChainInvalidationPrice}\nAlvo de Ciclo: ${aiVerdict?.executionStrategy.longTermCycleTarget}`;
+                        const text = `=== AUDITORIA ON-CHAIN MASTER IA: ${selectedCrypto.symbol} ===\nScore Geral: ${aiVerdict?.overallScore || 92}/100\nVeredito: ${aiVerdict?.consensusSignal || 'FORTE COMPRA'}\nFase de Ciclo: ${aiVerdict?.macroCyclePhase}\n\nSíntese:\n${aiVerdict?.onChainSummary}\n\nEstratégia:\nZona Acúmulo: ${aiVerdict?.executionStrategy?.idealAccumulationZone}\nInvalidação: ${aiVerdict?.executionStrategy?.onChainInvalidationPrice}\nAlvo de Ciclo: ${aiVerdict?.executionStrategy?.longTermCycleTarget}`;
                         navigator.clipboard.writeText(text);
                         setCopiedAiSummary(true);
                         setTimeout(() => setCopiedAiSummary(false), 2500);
@@ -767,7 +767,7 @@ ${onChainHistory.summary12m.keyTakeaway12m}`;
                   Estratégia Tática On-Chain & Gestão Institucional (${selectedCrypto.symbol})
                 </span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                  Convicção Institucional: {aiVerdict?.executionStrategy.institutionalConviction || 'EXTREMA'}
+                  Convicção Institucional: {aiVerdict?.executionStrategy?.institutionalConviction || 'EXTREMA'}
                 </span>
               </div>
 
@@ -775,28 +775,28 @@ ${onChainHistory.summary12m.keyTakeaway12m}`;
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
                   <span className="text-[10.5px] font-mono text-slate-400 block">🎯 Zona Ideal de Acúmulo</span>
                   <span className="text-xs font-mono font-bold text-emerald-400 block mt-1">
-                    {aiVerdict?.executionStrategy.idealAccumulationZone || `US$ ${(selectedCrypto.priceUsd * 0.98).toFixed(2)} - US$ ${(selectedCrypto.priceUsd * 1.01).toFixed(2)}`}
+                    {aiVerdict?.executionStrategy?.idealAccumulationZone || `US$ ${(selectedCrypto.priceUsd * 0.98).toFixed(2)} - US$ ${(selectedCrypto.priceUsd * 1.01).toFixed(2)}`}
                   </span>
                 </div>
 
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
                   <span className="text-[10.5px] font-mono text-slate-400 block">🛡️ Invalidação On-Chain</span>
                   <span className="text-xs font-mono font-bold text-rose-400 block mt-1">
-                    {aiVerdict?.executionStrategy.onChainInvalidationPrice || `US$ ${(selectedCrypto.priceUsd * 0.92).toFixed(2)} (Abaixo do Custo Médio)`}
+                    {aiVerdict?.executionStrategy?.onChainInvalidationPrice || `US$ ${(selectedCrypto.priceUsd * 0.92).toFixed(2)} (Abaixo do Custo Médio)`}
                   </span>
                 </div>
 
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
                   <span className="text-[10.5px] font-mono text-slate-400 block">🚀 Alvo de Ciclo de Longo Prazo</span>
                   <span className="text-xs font-mono font-bold text-cyan-300 block mt-1">
-                    {aiVerdict?.executionStrategy.longTermCycleTarget || `US$ ${(selectedCrypto.priceUsd * 1.55).toFixed(2)} - US$ ${(selectedCrypto.priceUsd * 1.95).toFixed(2)}`}
+                    {aiVerdict?.executionStrategy?.longTermCycleTarget || `US$ ${(selectedCrypto.priceUsd * 1.55).toFixed(2)} - US$ ${(selectedCrypto.priceUsd * 1.95).toFixed(2)}`}
                   </span>
                 </div>
 
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
                   <span className="text-[10.5px] font-mono text-slate-400 block">⏳ Horizonte Recomendado</span>
                   <span className="text-xs font-mono font-bold text-purple-300 block mt-1">
-                    {aiVerdict?.executionStrategy.recommendedHoldingPeriod || 'Médio a Longo Prazo (3 a 12 meses)'}
+                    {aiVerdict?.executionStrategy?.recommendedHoldingPeriod || 'Médio a Longo Prazo (3 a 12 meses)'}
                   </span>
                 </div>
               </div>

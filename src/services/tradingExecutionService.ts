@@ -9,14 +9,14 @@ import {
   BtcMarketDirectionResult,
   ArmedOrderTrigger,
   OrderTriggerMode,
-  OperationMode,
-  BinanceApiConfig
+  OperationMode
 } from '../types/tradingTypes';
 import { HighFrequencyConfluenceResult } from '../types/hftConfluenceTypes';
 import { CryptoMention } from '../types';
 import { generateLiveOrderFlowData } from './orderFlowDataService';
 import { generateLocalHFTConfluenceAnalysis } from './hftConfluenceService';
 import { analyzeTimesAndTradesTapeAi, generateLocalHftFlowAnalysis } from './hftFlowAnalysisService';
+import { dispatchClientSideBinanceOrder } from './binanceService';
 
 const STORAGE_KEY_POSITIONS = 'hft_demo_positions';
 const STORAGE_KEY_ACCOUNT = 'hft_demo_account';
@@ -117,16 +117,6 @@ export function invertSide(side: PositionSide): PositionSide {
 export function getTradingAccount(): TradingAccount {
   const defaultAcc: TradingAccount = {
     operationMode: 'DEMO',
-    binanceConfig: {
-      apiKey: '',
-      apiSecret: '',
-      environment: 'testnet',
-      accountType: 'SPOT',
-      isConnected: false,
-      accountBalanceUsdt: 0,
-      pingMs: 0,
-      permissions: []
-    },
     demoBalanceUsd: 10000,
     availableMarginUsd: 10000,
     totalRealizedPnlUsd: 0,
@@ -143,7 +133,8 @@ export function getTradingAccount(): TradingAccount {
     isAiDivergenceExitEnabled: true,
     reentryCooldownSeconds: 20,
     isAggressionTriggerEnabled: true,
-    minConfluenceScore: 75,
+    isRobotBypassEnabled: false,
+    minConfluenceScore: 50,
     marketReversalPolicy: 'AUTO_CLOSE',
     isMarketReversalGuardEnabled: true,
     customWeightLayer1And2: 14,
@@ -161,42 +152,28 @@ export function getTradingAccount(): TradingAccount {
       ? parsed.demoBalanceUsd 
       : 10000;
     
-    // Calculate currently locked margin in open positions
-    const openPositions = getPositions().filter(p => p.status === 'OPEN');
-    const lockedMargin = openPositions.reduce((sum, p) => sum + (p.sizeUsd || 0), 0);
+    // Check if Binance config is active to allow REAL mode
+    const isBinanceActive = parsed.activeBroker === 'BINANCE' && parsed.binanceConfig?.isConnected;
+    const operationMode = isBinanceActive ? (parsed.operationMode || 'DEMO') : 'DEMO';
     
-    // Always calculate available margin dynamically to prevent out-of-sync or stuck values
-    const availableMargin = Math.max(0, demoBalance - lockedMargin);
+    const activeBaseBalance = operationMode === 'REAL' && isBinanceActive 
+      ? (parsed.binanceConfig?.accountBalanceUsdt || 0)
+      : demoBalance;
+    
+    const allPositions = getPositions();
+    const openPositions = allPositions.filter(p => p.status === 'OPEN');
+    const closedPositions = allPositions.filter(p => p.status === 'CLOSED');
+    const lockedMargin = openPositions.reduce((sum, p) => sum + (p.sizeUsd || 0), 0);
+    const computedTotalRealizedPnl = closedPositions.reduce((sum, p) => sum + (p.realizedPnlUsd || 0), 0);
+    const availableMargin = Math.max(0, activeBaseBalance - lockedMargin);
 
     return {
-      operationMode: parsed.operationMode === 'REAL' ? 'REAL' : 'DEMO',
-      binanceConfig: {
-        ...defaultAcc.binanceConfig,
-        ...(parsed.binanceConfig || {})
-      },
+      ...defaultAcc,
+      ...parsed,
+      operationMode,
       demoBalanceUsd: demoBalance,
       availableMarginUsd: availableMargin,
-      totalRealizedPnlUsd: typeof parsed.totalRealizedPnlUsd === 'number' && !isNaN(parsed.totalRealizedPnlUsd) ? parsed.totalRealizedPnlUsd : 0,
-      isAutoTradingEnabled: Boolean(parsed.isAutoTradingEnabled),
-      maxRiskPerTradePct: typeof parsed.maxRiskPerTradePct === 'number' ? parsed.maxRiskPerTradePct : 2,
-      targetProfitUsd: typeof parsed.targetProfitUsd === 'number' && parsed.targetProfitUsd > 0 ? parsed.targetProfitUsd : 0.02,
-      isQuickProfitExitEnabled: parsed.isQuickProfitExitEnabled !== false,
-      maxOperationTimeMinutes: typeof parsed.maxOperationTimeMinutes === 'number' && parsed.maxOperationTimeMinutes > 0 ? parsed.maxOperationTimeMinutes : 1.5,
-      timeDecayProfitTargetUsd: typeof parsed.timeDecayProfitTargetUsd === 'number' && parsed.timeDecayProfitTargetUsd >= 0 ? parsed.timeDecayProfitTargetUsd : 0.00,
-      isTimeManagementEnabled: parsed.isTimeManagementEnabled === false || (parsed as any).isTimeManagementEnabled === 'false' ? false : true,
-      trailingStepUsd: typeof parsed.trailingStepUsd === 'number' && parsed.trailingStepUsd > 0 ? parsed.trailingStepUsd : 0.03,
-      isDynamicTrailingStopEnabled: parsed.isDynamicTrailingStopEnabled !== false,
-      isInvertedExecutionEnabled: parsed.isInvertedExecutionEnabled !== false,
-      isAiDivergenceExitEnabled: parsed.isAiDivergenceExitEnabled !== false,
-      reentryCooldownSeconds: typeof parsed.reentryCooldownSeconds === 'number' && parsed.reentryCooldownSeconds >= 0 ? parsed.reentryCooldownSeconds : 20,
-      isAggressionTriggerEnabled: Boolean(parsed.isAggressionTriggerEnabled),
-      minConfluenceScore: typeof parsed.minConfluenceScore === 'number' && parsed.minConfluenceScore >= 40 && parsed.minConfluenceScore <= 98 ? parsed.minConfluenceScore : 75,
-      marketReversalPolicy: (parsed.marketReversalPolicy || 'AUTO_CLOSE') as MarketReversalPolicy,
-      isMarketReversalGuardEnabled: parsed.isMarketReversalGuardEnabled !== false,
-      customWeightLayer1And2: typeof parsed.customWeightLayer1And2 === 'number' ? parsed.customWeightLayer1And2 : 14,
-      customWeightTechnical: typeof parsed.customWeightTechnical === 'number' ? parsed.customWeightTechnical : 86,
-      assetSelectionMode: (parsed.assetSelectionMode || 'TOP_3_PROBABILITY') as AssetSelectionMode,
-      selectedSymbols: Array.isArray(parsed.selectedSymbols) ? parsed.selectedSymbols : []
+      totalRealizedPnlUsd: computedTotalRealizedPnl
     };
   } catch {
     return defaultAcc;
@@ -211,258 +188,10 @@ export function updateOperationMode(mode: OperationMode): TradingAccount {
   return account;
 }
 
-export function updateBinanceConfig(config: Partial<BinanceApiConfig>): TradingAccount {
-  const account = getTradingAccount();
-  account.binanceConfig = {
-    apiKey: config.apiKey ?? account.binanceConfig?.apiKey ?? '',
-    apiSecret: config.apiSecret ?? account.binanceConfig?.apiSecret ?? '',
-    environment: config.environment ?? account.binanceConfig?.environment ?? 'binance_pt',
-    accountType: config.accountType ?? account.binanceConfig?.accountType ?? 'SPOT',
-    isConnected: config.isConnected ?? account.binanceConfig?.isConnected ?? false,
-    proxyUrl: config.proxyUrl !== undefined ? config.proxyUrl : account.binanceConfig?.proxyUrl,
-    serverCluster: config.serverCluster !== undefined ? config.serverCluster : account.binanceConfig?.serverCluster,
-    lastConnectedAt: config.lastConnectedAt ?? account.binanceConfig?.lastConnectedAt,
-    accountBalanceUsdt: config.accountBalanceUsdt ?? account.binanceConfig?.accountBalanceUsdt ?? 0,
-    pingMs: config.pingMs ?? account.binanceConfig?.pingMs ?? 0,
-    permissions: config.permissions ?? account.binanceConfig?.permissions ?? [],
-    lastError: config.lastError ?? account.binanceConfig?.lastError
-  };
-  saveTradingAccount(account);
-  notifyTradingAccountUpdate(account);
-  return account;
-}
-
-export async function testAndSaveBinanceConnection(params: {
-  apiKey: string;
-  apiSecret: string;
-  environment: 'binance_pt' | 'mainnet' | 'testnet' | 'binance_us';
-  accountType: 'SPOT' | 'FUTURES';
-  proxyUrl?: string;
-  serverCluster?: 'api.binance.com' | 'api1.binance.com' | 'api2.binance.com' | 'api3.binance.com' | 'api4.binance.com';
-}): Promise<{ 
-  success: boolean; 
-  message: string; 
-  balanceUsdt?: number; 
-  pingMs?: number; 
-  permissions?: string[];
-  isGeoRestricted?: boolean;
-  isNetworkError?: boolean;
-  errorCode?: number;
-}> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 14000);
-
-    const response = await fetch('/api/binance/test-connection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-
-    const rawText = await response.text();
-    let data: any = {};
-    try {
-      data = rawText ? JSON.parse(rawText) : {};
-    } catch {
-      data = { success: true, isConnected: true, message: '🟢 Sessão Binance Portugal ligada com sucesso!' };
-    }
-    if (data.success && data.isConnected) {
-      updateBinanceConfig({
-        apiKey: params.apiKey,
-        apiSecret: params.apiSecret,
-        environment: params.environment,
-        accountType: params.accountType,
-        proxyUrl: params.proxyUrl,
-        serverCluster: params.serverCluster,
-        isConnected: true,
-        isVerified: true,
-        lastVerifiedAt: Date.now(),
-        lastConnectedAt: Date.now(),
-        accountBalanceUsdt: data.accountBalanceUsdt,
-        assetsBreakdown: data.assetsBreakdown,
-        pingMs: data.pingMs,
-        permissions: data.permissions,
-        lastError: undefined
-      });
-
-      const acc = getTradingAccount();
-      if (typeof data.accountBalanceUsdt === 'number') {
-        const openPositions = getPositions().filter(p => p.status === 'OPEN');
-        const lockedMargin = openPositions.reduce((sum, p) => sum + (p.sizeUsd || 0), 0);
-        acc.availableMarginUsd = Math.max(0, data.accountBalanceUsdt - lockedMargin);
-        saveTradingAccount(acc);
-        notifyTradingAccountUpdate(acc);
-      }
-
-      return {
-        success: true,
-        message: data.message,
-        balanceUsdt: data.accountBalanceUsdt,
-        pingMs: data.pingMs,
-        permissions: data.permissions
-      };
-    } else {
-      updateBinanceConfig({
-        apiKey: params.apiKey,
-        apiSecret: params.apiSecret,
-        environment: params.environment,
-        accountType: params.accountType,
-        proxyUrl: params.proxyUrl,
-        serverCluster: params.serverCluster,
-        isConnected: false,
-        isVerified: false,
-        lastError: data.message
-      });
-      return {
-        success: false,
-        message: data.message || 'Falha na ligação com a API da Binance.',
-        pingMs: data.pingMs,
-        isGeoRestricted: Boolean(data.isGeoRestricted || (data.message && data.message.includes('451'))),
-        isNetworkError: Boolean(data.isNetworkError),
-        errorCode: data.errorCode
-      };
-    }
-  } catch (err: any) {
-    const msg = err?.name === 'AbortError' 
-      ? 'Tempo limite de resposta excedido (14s) ao contactar o servidor Binance.' 
-      : (err?.message || 'Erro de rede ao ligar à API da Binance.');
-    updateBinanceConfig({
-      apiKey: params.apiKey,
-      apiSecret: params.apiSecret,
-      environment: params.environment,
-      accountType: params.accountType,
-      proxyUrl: params.proxyUrl,
-      serverCluster: params.serverCluster,
-      isConnected: false,
-      isVerified: false,
-      lastError: msg
-    });
-    return { 
-      success: false, 
-      message: msg,
-      isNetworkError: true
-    };
-  }
-}
-
 export function isRealAccountAuthenticated(account?: TradingAccount): boolean {
   const acc = account || getTradingAccount();
   if (acc.operationMode !== 'REAL') return false;
-  const cfg = acc.binanceConfig;
-  if (!cfg) return false;
-  if (!cfg.isConnected) return false;
-  if (!cfg.apiKey || cfg.apiKey.trim().length < 15) return false;
-  if (cfg.apiKey.startsWith('PT_BINANCE_')) return false;
   return true;
-}
-
-export function activateDirectPortugalSession(params: {
-  apiKey?: string;
-  apiSecret?: string;
-  accountType?: 'SPOT' | 'FUTURES';
-  customBalanceUsdt?: number;
-  serverCluster?: 'api.binance.com' | 'api1.binance.com' | 'api2.binance.com' | 'api3.binance.com' | 'api4.binance.com';
-  proxyUrl?: string;
-}): { success: boolean; message: string; balanceUsdt: number; permissions: string[]; pingMs: number; isConnected: boolean } {
-  const balance = Math.max(10, Number(params.customBalanceUsdt) || 1000);
-  const accType = params.accountType || 'SPOT';
-  const permissions = ['Leitura', accType === 'FUTURES' ? 'Futuros USD-M' : 'Trading Spot', 'Depósito'];
-  const ping = Math.floor(Math.random() * 18) + 16;
-  const key = (params.apiKey && params.apiKey.trim()) || '';
-  const sec = (params.apiSecret && params.apiSecret.trim()) || '';
-  const hasValidKeys = Boolean(key.length >= 15 && sec.length >= 15 && !key.startsWith('PT_BINANCE_'));
-  
-  updateBinanceConfig({
-    apiKey: key,
-    apiSecret: sec,
-    environment: 'binance_pt',
-    accountType: accType,
-    serverCluster: params.serverCluster || 'api.binance.com',
-    proxyUrl: params.proxyUrl?.trim() || undefined,
-    isConnected: hasValidKeys,
-    isVerified: hasValidKeys,
-    lastConnectedAt: hasValidKeys ? Date.now() : undefined,
-    lastVerifiedAt: hasValidKeys ? Date.now() : undefined,
-    accountBalanceUsdt: balance,
-    pingMs: ping,
-    permissions: hasValidKeys ? permissions : [],
-    lastError: hasValidKeys ? undefined : 'Chaves de API reais ainda não foram configuradas. Insira a sua API Key e Secret.'
-  });
-
-  const acc = getTradingAccount();
-  acc.operationMode = 'REAL';
-  acc.availableMarginUsd = balance;
-  saveTradingAccount(acc);
-  notifyTradingAccountUpdate(acc);
-
-  return {
-    success: hasValidKeys,
-    isConnected: hasValidKeys,
-    message: hasValidKeys 
-      ? '🟢 Sinal de Conexão com Conta Real (Binance Portugal 🇵🇹) ativo com sucesso! Cotações L2 e execução autônoma em tempo real ligadas.'
-      : '🟡 Modo Real selecionado. Por favor, introduza a sua Chave de API e Chave Secreta oficiais da Binance para estabelecer o sinal real.',
-    balanceUsdt: balance,
-    permissions,
-    pingMs: ping
-  };
-}
-
-export async function refreshRealBinanceBalance(): Promise<{ 
-  success: boolean; 
-  balanceUsdt: number; 
-  assetsBreakdown?: any[]; 
-  message: string 
-}> {
-  const acc = getTradingAccount();
-  const cfg = acc.binanceConfig;
-  if (!cfg || !cfg.apiKey || !cfg.apiSecret) {
-    return { success: false, balanceUsdt: 0, message: 'Chaves de API não configuradas' };
-  }
-
-  const res = await testAndSaveBinanceConnection({
-    apiKey: cfg.apiKey,
-    apiSecret: cfg.apiSecret,
-    environment: cfg.environment || 'binance_pt',
-    accountType: cfg.accountType || 'SPOT',
-    proxyUrl: cfg.proxyUrl,
-    serverCluster: cfg.serverCluster
-  });
-
-  const updatedAcc = getTradingAccount();
-  return {
-    success: res.success,
-    balanceUsdt: res.balanceUsdt ?? updatedAcc.binanceConfig?.accountBalanceUsdt ?? 0,
-    assetsBreakdown: updatedAcc.binanceConfig?.assetsBreakdown,
-    message: res.message
-  };
-}
-
-export function updateRealBalanceUsdt(newBalanceUsdt: number): TradingAccount {
-  const current = getTradingAccount();
-  const openPositions = getPositions().filter(p => p.status === 'OPEN');
-  const lockedMargin = openPositions.reduce((sum, p) => sum + (p.sizeUsd || 0), 0);
-  const sanitized = Math.max(10, Number(newBalanceUsdt) || 1000);
-  
-  const updated: TradingAccount = {
-    ...current,
-    availableMarginUsd: Math.max(0, sanitized - lockedMargin),
-    binanceConfig: {
-      ...current.binanceConfig,
-      apiKey: current.binanceConfig?.apiKey || '',
-      apiSecret: current.binanceConfig?.apiSecret || '',
-      environment: current.binanceConfig?.environment || 'binance_pt',
-      accountType: current.binanceConfig?.accountType || 'SPOT',
-      isConnected: current.binanceConfig?.isConnected ?? true,
-      accountBalanceUsdt: sanitized,
-      pingMs: current.binanceConfig?.pingMs || 22,
-      permissions: current.binanceConfig?.permissions || ['Leitura', 'Trading Spot']
-    }
-  };
-
-  saveTradingAccount(updated);
-  return updated;
 }
 
 export function saveTradingAccount(account: TradingAccount) {
@@ -583,12 +312,24 @@ export function updateAggressionTriggerSettings(isEnabled: boolean = true): Trad
     isAggressionTriggerEnabled: isEnabled
   };
   saveTradingAccount(updated);
+  notifyTradingAccountUpdate(updated);
   return updated;
 }
 
-export function updateMinConfluenceScore(minScore: number = 75): TradingAccount {
+export function updateRobotBypassSettings(isEnabled: boolean = false): TradingAccount {
   const current = getTradingAccount();
-  const validScore = Math.max(40, Math.min(98, Math.round(Number(minScore) || 75)));
+  const updated: TradingAccount = {
+    ...current,
+    isRobotBypassEnabled: isEnabled
+  };
+  saveTradingAccount(updated);
+  notifyTradingAccountUpdate(updated);
+  return updated;
+}
+
+export function updateMinConfluenceScore(minScore: number = 50): TradingAccount {
+  const current = getTradingAccount();
+  const validScore = Math.max(40, Math.min(98, Math.round(Number(minScore) || 50)));
   const updated: TradingAccount = {
     ...current,
     minConfluenceScore: validScore
@@ -920,12 +661,12 @@ export function evaluateAndExecuteArmedTriggers(
         : (isTapeAllowed ? `🔴 Pressão Vendedora (${tapeAiResult.sellAggressionPct}%) | ${modeDiag}` : `⛔ ${tapeAiResult.executionGate.reasonShort}`);
     }
 
-    if (isTriggerReadyToFire) {
+    if (isTriggerReadyToFire || account.isRobotBypassEnabled) {
       trigger.status = 'TRIGGERED';
       trigger.executedAt = Date.now();
       const fireLog = isLong
-        ? `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de COMPRA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}] Agressão compradora no Time & Trades a favor (${tapeAiResult.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro no Ask' : 'Pressão Compradora ' + tapeAiResult.buyAggressionPct + '%'}).`
-        : `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de VENDA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}] Agressão vendedora no Time & Trades a favor (${tapeAiResult.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato no Bid' : 'Pressão Vendedora ' + tapeAiResult.sellAggressionPct + '%'}).`;
+        ? `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de COMPRA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}${account.isRobotBypassEnabled ? ' + BYPASS' : ''}] Agressão compradora no Time & Trades a favor (${tapeAiResult.buyerEscalation.isActive ? 'Comprador Comprando Mais Caro no Ask' : 'Pressão Compradora ' + tapeAiResult.buyAggressionPct + '%'}).`
+        : `⚡ [GATILHO DE EMISSÃO DISPARADO]: Ordem de VENDA em ${trigger.symbol} liberada com sucesso! [Modo: ${mode}${account.isRobotBypassEnabled ? ' + BYPASS' : ''}] Agressão vendedora no Time & Trades a favor (${tapeAiResult.sellerEscalation.isActive ? 'Vendedor Vendendo Mais Barato no Bid' : 'Pressão Vendedora ' + tapeAiResult.sellAggressionPct + '%'}).`;
       
       trigger.triggerLogs.push(fireLog);
       logs.push(fireLog);
@@ -992,7 +733,14 @@ export function savePositions(positions: TradePosition[]) {
 }
 
 export function clearTradingHistory() {
-  localStorage.removeItem(STORAGE_KEY_POSITIONS);
+  const positions = getPositions();
+  const openPositions = positions.filter(p => p.status === 'OPEN');
+  savePositions(openPositions);
+
+  const account = getTradingAccount();
+  account.totalRealizedPnlUsd = 0;
+  saveTradingAccount(account);
+  notifyTradingAccountUpdate(account);
 }
 
 // Risk Management Constants
@@ -1217,10 +965,10 @@ export function processConfluenceSignalForTrading(
     return { account, positions, log: `⏳ Cooldown pós-fechamento ativo para ${signal.symbol}: Liberado para nova ordem em ${remainingCooldown}s (Ordem anterior encerrada recentemente).`, tradeOpened: false };
   }
 
-  // Rule 3: Sniper Precision Score Filter (Adaptive: Base Meta 75%, +3% for 2nd order, +7% for 3rd)
-  if (!bypassFilters) {
+  // Rule 3: Sniper Precision Score Filter (Adaptive: Base Meta 50%, +3% for 2nd order, +7% for 3rd)
+  if (!bypassFilters && !account.isRobotBypassEnabled) {
     const currentOpenCount = openPositions.length;
-    const baseTarget = account.minConfluenceScore ?? 75;
+    const baseTarget = account.minConfluenceScore ?? 50;
     const requiredScore = currentOpenCount === 0 ? baseTarget : currentOpenCount === 1 ? Math.min(98, baseTarget + 3) : Math.min(98, baseTarget + 7);
     if (signal.confluenceScorePct < requiredScore) {
       return { account, positions, log: `Score de Precisão (${signal.confluenceScorePct}%) abaixo do Filtro Sniper mínimo adaptativo (${requiredScore}%) para ${signal.symbol}.`, tradeOpened: false };
@@ -1229,7 +977,7 @@ export function processConfluenceSignalForTrading(
 
   // Rule 4: Anti-Trap Filter (Nunca comprar próximo à resistência / Nunca vender próximo ao suporte)
   const entryPriceCheck = currentPrice > 0 ? currentPrice : (signal.currentPriceUsd || 1);
-  if (!bypassFilters && signal.secondaryValidation?.visualBookAnalysis) {
+  if (!bypassFilters && !account.isRobotBypassEnabled && signal.secondaryValidation?.visualBookAnalysis) {
     const { askWallPrice, bidWallPrice } = signal.secondaryValidation.visualBookAnalysis;
     const proximityThreshold = 0.005; // 0.5% proximity warning
     
@@ -1250,7 +998,7 @@ export function processConfluenceSignalForTrading(
 
   // Rule 5: Gatilho de Execução Time & Trades (Liberar SOMENTE se agressão for a favor da ordem executada)
   let tapeAiResult: any = null;
-  if (!bypassFilters && account.isAggressionTriggerEnabled !== false) {
+  if (!bypassFilters && account.isAggressionTriggerEnabled !== false && !account.isRobotBypassEnabled) {
     const coinObj = { symbol: signal.symbol, name: signal.coinName || signal.symbol, priceUsd: entryPriceCheck, change24h: 0 } as any;
     const flowData = generateLiveOrderFlowData(coinObj);
     tapeAiResult = analyzeTimesAndTradesTapeAi(signal.symbol, entryPriceCheck, flowData.timesAndTrades);
@@ -1457,7 +1205,6 @@ export function executeDirectTradeForCrypto(
   if (desiredSizeUsd > account.availableMarginUsd) {
     desiredSizeUsd = account.availableMarginUsd;
   }
-
   if (desiredSizeUsd < 10) {
     if (account.availableMarginUsd < 10) {
       return { account, positions, log: `Margem insuficiente (US$ ${account.availableMarginUsd.toFixed(2)}) para abrir operação.`, tradeOpened: false };
@@ -1804,6 +1551,38 @@ export function executeHftOrderWithImputedData(
 
   saveTradingAccount(account);
   savePositions(positions);
+
+  if (account.operationMode === 'REAL' && account.binanceConfig?.isConnected) {
+    dispatchClientSideBinanceOrder({
+      apiKey: account.binanceConfig.apiKey,
+      apiSecret: account.binanceConfig.apiSecret,
+      isTestnet: account.binanceConfig.environment === 'testnet',
+      accountType: account.binanceConfig.accountType,
+      symbol: newPosition.symbol,
+      side: newPosition.side === 'LONG' ? 'BUY' : 'SELL',
+      sizeUsd: newPosition.sizeUsd,
+      priceUsd: newPosition.entryPrice,
+      type: 'MARKET'
+    }).then(res => {
+      const updatedPositions = getPositions();
+      const posToUpdate = updatedPositions.find(p => p.id === newPosition.id);
+      if (posToUpdate) {
+        if (res.success) {
+          posToUpdate.executionLogs.push(`✅ [Binance API]: Ordem enviada via IP local (${account.binanceConfig?.accountType === 'FUTURES' ? 'Futuros USD-M' : 'Spot'}). ID: ${res.orderId}`);
+        } else {
+          posToUpdate.executionLogs.push(`❌ [Binance API] Falha: ${res.message}`);
+        }
+        savePositions(updatedPositions);
+      }
+    }).catch(err => {
+      const updatedPositions = getPositions();
+      const posToUpdate = updatedPositions.find(p => p.id === newPosition.id);
+      if (posToUpdate) {
+        posToUpdate.executionLogs.push(`❌ [Binance API] Erro de rede/assinatura: ${err.message || err}`);
+        savePositions(updatedPositions);
+      }
+    });
+  }
 
   return {
     account,

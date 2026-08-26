@@ -126,14 +126,20 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
   // HFT AI Analyzer State with robust immediate local computation & localStorage cache
-  const [hftAnalysis, setHftAnalysis] = useState<HftFlowAnalysisResult | null>(() => {
+  const [hftAnalysis, setHftAnalysis] = useState<HftFlowAnalysisResult>(() => {
+    const fallback = generateLocalHftFlowAnalysis(crypto.symbol, crypto.priceUsd || 100);
     if (typeof window !== 'undefined' && window.localStorage) {
       try {
         const cached = window.localStorage.getItem(`hft_analysis_${crypto.symbol.toUpperCase()}`);
-        if (cached) return JSON.parse(cached);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.orderBookReading?.signal?.color && parsed.averageEntryTime) {
+            return { ...fallback, ...parsed };
+          }
+        }
       } catch (_) {}
     }
-    return generateLocalHftFlowAnalysis(crypto.symbol, crypto.priceUsd || 100);
+    return fallback;
   });
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [hftError, setHftError] = useState<string | null>(null);
@@ -284,9 +290,17 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
         throw new Error('O servidor está sobrecarregado (Limite de requisições excedido). Tente novamente em alguns segundos.');
       }
         if (data.success && data.result) {
-          setHftAnalysis(data.result);
+          const merged = {
+            ...localResult,
+            ...data.result,
+            orderBookReading: {
+              ...localResult.orderBookReading,
+              ...(data.result.orderBookReading || {})
+            }
+          };
+          setHftAnalysis(merged);
           if (typeof window !== 'undefined' && window.localStorage) {
-            window.localStorage.setItem(`hft_analysis_${crypto.symbol.toUpperCase()}`, JSON.stringify(data.result));
+            window.localStorage.setItem(`hft_analysis_${crypto.symbol.toUpperCase()}`, JSON.stringify(merged));
           }
           setHftError(null);
           return;
@@ -1038,11 +1052,11 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
                   {/* Card 1: SINAL OPERACIONAL DO LIVRO DE OFERTAS */}
                   <div className={`p-2.5 rounded-xl border flex flex-col justify-between space-y-2 ${
-                    hftAnalysis.orderBookReading.signal.color === 'emerald'
+                    hftAnalysis?.orderBookReading?.signal?.color === 'emerald'
                       ? 'bg-emerald-950/30 border-emerald-500/50 shadow-sm shadow-emerald-950/30'
-                      : hftAnalysis.orderBookReading.signal.color === 'rose'
+                      : hftAnalysis?.orderBookReading?.signal?.color === 'rose'
                       ? 'bg-rose-950/30 border-rose-500/50 shadow-sm shadow-rose-950/30'
-                      : hftAnalysis.orderBookReading.signal.color === 'cyan'
+                      : hftAnalysis?.orderBookReading?.signal?.color === 'cyan'
                       ? 'bg-cyan-950/30 border-cyan-500/50 shadow-sm shadow-cyan-950/30'
                       : 'bg-amber-950/30 border-amber-500/50 shadow-sm shadow-amber-950/30'
                   }`}>
@@ -1053,27 +1067,27 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                           Sinal do Livro de Ofertas
                         </span>
                         <span className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase ${
-                          hftAnalysis.orderBookReading.signal.color === 'emerald'
+                          hftAnalysis?.orderBookReading?.signal?.color === 'emerald'
                             ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse'
-                            : hftAnalysis.orderBookReading.signal.color === 'rose'
+                            : hftAnalysis?.orderBookReading?.signal?.color === 'rose'
                             ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse'
                             : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                         }`}>
-                          {hftAnalysis.orderBookReading.signal.signalType || hftAnalysis.orderBookReading.signal.type || hftAnalysis.orderBookReading.signal.signal || 'SINAL'}
+                          {hftAnalysis?.orderBookReading?.signal?.signalType || hftAnalysis?.orderBookReading?.signal?.type || hftAnalysis?.orderBookReading?.signal?.signal || 'SINAL'}
                         </span>
                       </div>
 
                       <div className="text-[11px] font-black leading-snug">
                         <span className={
-                          hftAnalysis.orderBookReading.signal.color === 'emerald'
+                          hftAnalysis?.orderBookReading?.signal?.color === 'emerald'
                             ? 'text-emerald-300'
-                            : hftAnalysis.orderBookReading.signal.color === 'rose'
+                            : hftAnalysis?.orderBookReading?.signal?.color === 'rose'
                             ? 'text-rose-300'
-                            : hftAnalysis.orderBookReading.signal.color === 'cyan'
+                            : hftAnalysis?.orderBookReading?.signal?.color === 'cyan'
                             ? 'text-cyan-300'
                             : 'text-amber-300'
                         }>
-                          {hftAnalysis.orderBookReading.signal.label}
+                          {hftAnalysis?.orderBookReading?.signal?.label}
                         </span>
                       </div>
 
@@ -1082,26 +1096,26 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                         <div className="flex justify-between text-[8px] text-slate-400">
                           <span>Convicção HFT</span>
                           <span className="font-bold text-slate-200">
-                            {hftAnalysis.orderBookReading.signal.confidencePct || 70}%
+                            {hftAnalysis?.orderBookReading?.signal?.confidencePct || 70}%
                           </span>
                         </div>
                         <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
                           <div 
                             className={`h-full transition-all duration-500 ${
-                              hftAnalysis.orderBookReading.signal.color === 'emerald'
+                              hftAnalysis?.orderBookReading?.signal?.color === 'emerald'
                                 ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
-                                : hftAnalysis.orderBookReading.signal.color === 'rose'
+                                : hftAnalysis?.orderBookReading?.signal?.color === 'rose'
                                 ? 'bg-gradient-to-r from-rose-500 to-red-400'
                                 : 'bg-gradient-to-r from-amber-500 to-orange-400'
                             }`}
-                            style={{ width: `${hftAnalysis.orderBookReading.signal.confidencePct || 70}%` }}
+                            style={{ width: `${hftAnalysis?.orderBookReading?.signal?.confidencePct || 70}%` }}
                           />
                         </div>
                       </div>
                     </div>
 
                     <p className="text-[8.5px] text-slate-300 leading-tight border-t border-slate-800/80 pt-1.5">
-                      {hftAnalysis.orderBookReading.signal.biasDescription || hftAnalysis.orderBookReading.signal.rationale || 'Análise de fluxo baseada nas ordens limites.'}
+                      {hftAnalysis?.orderBookReading?.signal?.biasDescription || hftAnalysis?.orderBookReading?.signal?.rationale || 'Análise de fluxo baseada nas ordens limites.'}
                     </p>
                   </div>
 
@@ -1199,11 +1213,11 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 </div>
 
                 {/* Tactical Verdict Ribbon */}
-                {hftAnalysis.orderBookReading.tacticalVerdict && (
+                {hftAnalysis?.orderBookReading?.tacticalVerdict && (
                   <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/90 border border-indigo-500/30 flex items-center justify-between gap-2 text-[9.5px]">
                     <div className="flex items-center gap-1.5 text-indigo-300 font-medium">
                       <Zap className="w-3 h-3 text-amber-400 shrink-0" />
-                      <span>{hftAnalysis.orderBookReading.tacticalVerdict}</span>
+                      <span>{hftAnalysis?.orderBookReading?.tacticalVerdict}</span>
                     </div>
                     <span className="text-[8.5px] text-slate-500 font-mono shrink-0">
                       Spread: ${(hftAnalysis.orderBookReading.imbalance?.spreadUsd ?? 0.01).toFixed(4)} ({((hftAnalysis.orderBookReading.imbalance?.spreadPct ?? 0.01)).toFixed(3)}%)
@@ -1221,20 +1235,20 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[8px] text-slate-500 font-bold uppercase truncate">Tempo de Entrada</span>
                   <span className={`px-1 py-0.2 rounded text-[7.5px] font-black uppercase ${
-                    hftAnalysis.averageEntryTime.color === 'rose'
+                    hftAnalysis?.averageEntryTime?.color === 'rose'
                       ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse'
                       : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                   }`}>
-                    {hftAnalysis.averageEntryTime.status === 'ALTA_FREQUENCIA_DETECTADA' ? 'ALERTA HFT' : 'ESTÁVEL'}
+                    {hftAnalysis?.averageEntryTime?.status === 'ALTA_FREQUENCIA_DETECTADA' ? 'ALERTA HFT' : 'ESTÁVEL'}
                   </span>
                 </div>
                 <div>
                   <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                     <Timer className="w-3 h-3 text-indigo-400 shrink-0" />
-                    <span>{hftAnalysis.averageEntryTime.value}</span>
+                    <span>{hftAnalysis?.averageEntryTime?.value}</span>
                   </div>
                   <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                    {hftAnalysis.averageEntryTime.description}
+                    {hftAnalysis?.averageEntryTime?.description}
                   </p>
                 </div>
               </div>
@@ -1244,22 +1258,22 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[8px] text-slate-500 font-bold uppercase truncate">Suporte / Resistência</span>
                   <span className={`px-1 py-0.2 rounded text-[7.5px] font-black uppercase ${
-                    hftAnalysis.supportResistanceVolume.color === 'emerald'
+                    hftAnalysis?.supportResistanceVolume?.color === 'emerald'
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                       : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                   }`}>
-                    {hftAnalysis.supportResistanceVolume.status.replace('_RELEVANTE_ATIVO', '').replace('_RELEVANTE_ATIVA', '')}
+                    {hftAnalysis?.supportResistanceVolume?.status.replace('_RELEVANTE_ATIVO', '').replace('_RELEVANTE_ATIVA', '')}
                   </span>
                 </div>
                 <div>
                   <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                     <TrendingUp className="w-3 h-3 text-emerald-400 shrink-0" />
-                    <span className={hftAnalysis.supportResistanceVolume.color === 'emerald' ? 'text-emerald-400' : 'text-rose-400'}>
-                      {hftAnalysis.supportResistanceVolume.value}
+                    <span className={hftAnalysis?.supportResistanceVolume?.color === 'emerald' ? 'text-emerald-400' : 'text-rose-400'}>
+                      {hftAnalysis?.supportResistanceVolume?.value}
                     </span>
                   </div>
                   <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                    {hftAnalysis.supportResistanceVolume.description}
+                    {hftAnalysis?.supportResistanceVolume?.description}
                   </p>
                 </div>
               </div>
@@ -1269,7 +1283,7 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[8px] text-slate-500 font-bold uppercase truncate">Deslocamento</span>
                   <span className={`px-1 py-0.2 rounded text-[7.5px] font-black uppercase ${
-                    hftAnalysis.displacementEaseDirection.color === 'emerald'
+                    hftAnalysis?.displacementEaseDirection?.color === 'emerald'
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                       : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                   }`}>
@@ -1279,12 +1293,12 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div>
                   <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                     <Compass className="w-3 h-3 text-indigo-400 shrink-0 animate-spin" style={{ animationDuration: '8s' }} />
-                    <span className={hftAnalysis.displacementEaseDirection.color === 'emerald' ? 'text-emerald-400' : 'text-rose-400'}>
-                      {hftAnalysis.displacementEaseDirection.value}
+                    <span className={hftAnalysis?.displacementEaseDirection?.color === 'emerald' ? 'text-emerald-400' : 'text-rose-400'}>
+                      {hftAnalysis?.displacementEaseDirection?.value}
                     </span>
                   </div>
                   <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                    {hftAnalysis.displacementEaseDirection.description}
+                    {hftAnalysis?.displacementEaseDirection?.description}
                   </p>
                 </div>
               </div>
@@ -1300,10 +1314,10 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div>
                   <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                     <Zap className="w-3 h-3 text-cyan-400 shrink-0" />
-                    <span className="text-cyan-300">{hftAnalysis.fluidPriceRange.value}</span>
+                    <span className="text-cyan-300">{hftAnalysis?.fluidPriceRange?.value}</span>
                   </div>
                   <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                    {hftAnalysis.fluidPriceRange.description}
+                    {hftAnalysis?.fluidPriceRange?.description}
                   </p>
                 </div>
               </div>
@@ -1319,10 +1333,10 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                 <div>
                   <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                     <ShieldAlert className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span className="text-amber-300 leading-none">{hftAnalysis.highChurnLowDisplacementZone.value}</span>
+                    <span className="text-amber-300 leading-none">{hftAnalysis?.highChurnLowDisplacementZone?.value}</span>
                   </div>
                   <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                    {hftAnalysis.highChurnLowDisplacementZone.description}
+                    {hftAnalysis?.highChurnLowDisplacementZone?.description}
                   </p>
                 </div>
               </div>
@@ -1361,35 +1375,35 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
               </div>
 
               {/* 7. Varredura Direcional (Sweeping Momentum) */}
-              {hftAnalysis.sweepingMomentum && (
+              {hftAnalysis?.sweepingMomentum && (
                 <div className="p-2 rounded-lg bg-[#0a0d12] border border-slate-800 flex flex-col justify-between space-y-1.5">
                   <div className="flex items-center justify-between gap-1">
                     <span className="text-[8px] text-slate-500 font-bold uppercase truncate">Varredura Direcional</span>
                     <span className={`px-1 py-0.2 rounded text-[7.5px] font-black uppercase ${
-                      hftAnalysis.sweepingMomentum.color === 'rose'
+                      hftAnalysis?.sweepingMomentum?.color === 'rose'
                         ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse'
-                        : hftAnalysis.sweepingMomentum.color === 'emerald'
+                        : hftAnalysis?.sweepingMomentum?.color === 'emerald'
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse'
                         : 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
                     }`}>
-                      {hftAnalysis.sweepingMomentum.status}
+                      {hftAnalysis?.sweepingMomentum?.status}
                     </span>
                   </div>
                   <div>
                     <div className="flex items-center gap-1 text-slate-200 font-bold text-[10px]">
                       <Activity className="w-3 h-3 text-fuchsia-400 shrink-0" />
                       <span className={
-                        hftAnalysis.sweepingMomentum.color === 'rose'
+                        hftAnalysis?.sweepingMomentum?.color === 'rose'
                           ? 'text-rose-400'
-                          : hftAnalysis.sweepingMomentum.color === 'emerald'
+                          : hftAnalysis?.sweepingMomentum?.color === 'emerald'
                           ? 'text-emerald-400'
                           : 'text-slate-300'
                       }>
-                        {hftAnalysis.sweepingMomentum.value}
+                        {hftAnalysis?.sweepingMomentum?.value}
                       </span>
                     </div>
                     <p className="text-[8.5px] text-slate-400 leading-tight mt-1">
-                      {hftAnalysis.sweepingMomentum.description}
+                      {hftAnalysis?.sweepingMomentum?.description}
                     </p>
                   </div>
                 </div>
@@ -2049,13 +2063,13 @@ export const SingleCryptoTimesAndTrades: React.FC<SingleCryptoTimesAndTradesProp
                   <div className="flex items-center gap-1.5">
                     <span className="text-slate-400">Sinal Book:</span>
                     <span className={`px-1.5 py-0.2 rounded font-black text-[8px] uppercase ${
-                      hftAnalysis.orderBookReading.signal.color === 'emerald'
+                      hftAnalysis?.orderBookReading?.signal?.color === 'emerald'
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                        : hftAnalysis.orderBookReading.signal.color === 'rose'
+                        : hftAnalysis?.orderBookReading?.signal?.color === 'rose'
                         ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                         : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                     }`}>
-                      {hftAnalysis.orderBookReading.signal.label} ({hftAnalysis.orderBookReading.signal.confidencePct}%)
+                      {hftAnalysis?.orderBookReading?.signal?.label} ({hftAnalysis?.orderBookReading?.signal?.confidencePct}%)
                     </span>
                   </div>
 

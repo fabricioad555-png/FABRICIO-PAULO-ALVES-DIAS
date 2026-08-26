@@ -1,36 +1,10 @@
+export type OperationMode = 'DEMO' | 'REAL';
 export type PositionSide = 'LONG' | 'SHORT';
 export type PositionStatus = 'OPEN' | 'CLOSED';
-export type CloseReason = 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MANUAL' | 'AI_DIVERGENCE' | 'TIME_EXPIRATION' | 'MARKET_REVERSAL_BTC' | 'NONE';
-
-export type MarketReversalPolicy = 'AUTO_CLOSE' | 'TIGHTEN_STOP' | 'AUTO_FLIP' | 'ALERT_ONLY';
-
-export type OrderTriggerMode = 'INSTANT_AGGRESSION' | 'WHALE_VOLUME' | 'CONFLUENCE_DUAL' | 'DISPLACEMENT_AI';
-
-export interface ArmedOrderTrigger {
-  id: string;
-  symbol: string;
-  coinName: string;
-  targetSide: PositionSide;
-  sizeUsd: number;
-  leverage: number;
-  armedAt: number;
-  status: 'ARMED' | 'TRIGGERED' | 'CANCELLED' | 'BLOCKED_WAITING';
-  triggerMode: OrderTriggerMode;
-  minAggressionVolumeUsd?: number;
-  autoRearmOnClose?: boolean;
-  reason: string;
-  requiredCondition: string;
-  lastTapeCheckTime: number;
-  currentAggressionStatus?: string;
-  buyAggressionPct?: number;
-  sellAggressionPct?: number;
-  aggressionVolumeDetectedUsd?: number;
-  triggerLogs: string[];
-  executedPositionId?: string;
-  executedPrice?: number;
-  executedAt?: number;
-  triggeredAt?: number;
-}
+export type CloseReason = 'NONE' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL' | 'REVERSAL' | 'TIME_EXPIRED' | 'DYNAMIC_TRAILING' | 'QUICK_PROFIT' | 'AI_DIVERGENCE' | 'AUTO_CLOSE' | 'MARKET_REVERSAL_BTC' | 'TIME_EXPIRATION' | 'TRAILING_STOP';
+export type AssetSelectionMode = 'ALL_ASSETS' | 'TOP_3_PROBABILITY' | 'PARETO_80_20' | 'CUSTOM';
+export type OrderTriggerMode = 'PRICE_TOUCH' | 'IMBALANCE_DETECTED' | 'VOLUME_SPIKE' | 'DISPLACEMENT_AI' | 'INSTANT_AGGRESSION' | 'WHALE_VOLUME' | 'CONFLUENCE_DUAL';
+export type MarketReversalPolicy = 'STOP_ALL' | 'REDUCE_ONLY' | 'AUTO_CLOSE' | 'TIGHTEN_STOP' | 'ALERT_ONLY';
 
 export interface BtcMarketDirectionResult {
   score: number;
@@ -45,6 +19,25 @@ export interface BtcMarketDirectionResult {
   timestamp: number;
 }
 
+export interface BinanceApiConfig {
+  apiKey: string;
+  apiSecret: string;
+  environment: 'production' | 'testnet' | 'sandbox_local';
+  accountType: 'SPOT' | 'FUTURES';
+  isConnected: boolean;
+  isVerified?: boolean;
+  accountBalanceUsdt?: number;
+  availableMarginUsdt?: number;
+  lastError?: string;
+  pingMs?: number;
+  permissions?: string[];
+  futuresDetails?: {
+    totalWalletBalance: number;
+    availableBalance: number;
+    totalMarginBalance: number;
+  };
+}
+
 export interface TradePosition {
   id: string;
   symbol: string;
@@ -55,134 +48,23 @@ export interface TradePosition {
   sizeUsd: number;
   positionSizingPct: number;
   leverage: number;
-  
-  // Risk Management
   initialStopLoss: number;
   currentStopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
   takeProfit3: number;
-  
-  // Trailing Stop Data
   highestPriceSinceEntry: number;
   lowestPriceSinceEntry: number;
-  highestUnrealizedPnlUsd?: number;
-  trailingStepsCount?: number;
-  trailingLockedProfitUsd?: number;
-  
-  // PnL
+  highestUnrealizedPnlUsd: number;
+  trailingStepsCount: number;
+  trailingLockedProfitUsd: number;
   unrealizedPnlUsd: number;
   unrealizedPnlPct: number;
   realizedPnlUsd: number;
-  
-  // Meta
   status: PositionStatus;
   closeReason: CloseReason;
   openTime: number;
   closeTime?: number;
-  
-  // Attached Strategies & Modes at Execution
-  isQuickProfitExitEnabled?: boolean;
-  targetProfitUsd?: number;
-  isTimeManagementEnabled?: boolean;
-  maxOperationTimeMinutes?: number;
-  timeDecayProfitTargetUsd?: number;
-  isDynamicTrailingStopEnabled?: boolean;
-  isAggressionTriggerEnabled?: boolean; // Executed only with confirmed order book & tape aggression
-  aggressionTriggerStatus?: string;
-  timeLimitIgnoredLogAdded?: boolean;
-  timeLimitLossHoldingLogAdded?: boolean;
-  aiDivergenceIgnoredLogAdded?: boolean;
-
-  // Market Direction Alignment & Reversal Treatment
-  btcWeightedMarketSideAtEntry?: PositionSide;
-  marketReversalWarning?: boolean;
-  marketReversalActionApplied?: string;
-
-  // Logs
-  executionLogs: string[];
-}
-
-export type AssetSelectionMode = 'TOP_3_PROBABILITY' | 'ALL_ASSETS' | 'CUSTOM';
-
-export type OperationMode = 'DEMO' | 'REAL';
-
-export interface BinanceAssetBalance {
-  asset: string;
-  free: number;
-  locked: number;
-  total: number;
-  estimatedUsdt?: number;
-}
-
-export interface BinanceApiConfig {
-  apiKey: string;
-  apiSecret: string;
-  environment: 'mainnet' | 'testnet' | 'binance_us' | 'binance_pt';
-  accountType: 'SPOT' | 'FUTURES';
-  isConnected: boolean;
-  isVerified?: boolean;
-  lastVerifiedAt?: number;
-  proxyUrl?: string;
-  serverCluster?: 'api.binance.com' | 'api1.binance.com' | 'api2.binance.com' | 'api3.binance.com' | 'api4.binance.com';
-  lastConnectedAt?: number;
-  accountBalanceUsdt?: number;
-  assetsBreakdown?: BinanceAssetBalance[];
-  pingMs?: number;
-  permissions?: string[];
-  lastError?: string;
-}
-
-export interface TradingAccount {
-  operationMode?: OperationMode; // 'DEMO' (default) or 'REAL'
-  binanceConfig?: BinanceApiConfig;
-  demoBalanceUsd: number;
-  availableMarginUsd: number;
-  totalRealizedPnlUsd: number;
-  isAutoTradingEnabled: boolean;
-  maxRiskPerTradePct?: number; // Configured maximum risk per trade in percentage (default: 2)
-  riskCalculationBase?: 'AVAILABLE_MARGIN' | 'TOTAL_BALANCE'; // Base for risk calculation: Available Margin (default) or Total Demo Balance
-  maxMarginAllocationPct?: number; // Maximum allocation percentage per trade out of available margin (e.g. 33%)
-  targetProfitUsd?: number; // Target profit in USD to auto-close (default: 0.10 = 10 cents)
-  isQuickProfitExitEnabled?: boolean; // Whether 10c scalper exit is active (default: true)
-  maxOperationTimeMinutes?: number; // Maximum operation time in minutes (default: 5 min)
-  timeDecayProfitTargetUsd?: number; // Target profit permitted to close after max operation time (default: 0.00 = 0 cents)
-  isTimeManagementEnabled?: boolean; // Whether time-based exit is active (default: true)
-  trailingStepUsd?: number; // Trailing step advance in USD (default: 0.03 = 3 cents)
-  isDynamicTrailingStopEnabled?: boolean; // Whether dynamic trailing stop is active (default: true)
-  isInvertedExecutionEnabled?: boolean; // Execute inverted orders: Buy -> Sell (Short), Sell -> Buy (Long) (default: true)
-  isAiDivergenceExitEnabled?: boolean; // Whether closing orders on AI Divergence (< 1 cent) is active (default: true)
-  reentryCooldownSeconds?: number; // Cooldown for repurchasing same crypto after position closes (default: 20s. Options: 20, 60, 180, 300, 600)
-  isAggressionTriggerEnabled?: boolean; // Liberar ordem somente se agressão no Time & Trades for a favor da ordem (default: true)
-  isOneMin75AggressionGateEnabled?: boolean; // Gatilho de agressões >75% em 1 minuto a favor da ordem (default: true)
-  minConfluenceScore?: number; // Meta de Confluência Sniper em % (default: 75)
-
-  // Market Direction Reversal Management (Sistema Ponderado 14% / 86% - BTC)
-  marketReversalPolicy?: MarketReversalPolicy; // 'AUTO_CLOSE' (default), 'TIGHTEN_STOP', 'AUTO_FLIP', 'ALERT_ONLY'
-  isMarketReversalGuardEnabled?: boolean; // default: true
-  customWeightLayer1And2?: number; // default: 14%
-  customWeightTechnical?: number; // default: 86%
-
-  assetSelectionMode?: AssetSelectionMode; // Filter for which coins to trade: Top 3 Pareto (default), All 15, or Custom
-  selectedSymbols?: string[]; // Custom selected symbols when mode is 'CUSTOM'
-}
-
-export interface ExecuteHftOrderParams {
-  symbol: string;
-  coinName?: string;
-  currentPrice: number;
-  side: PositionSide;
-  sizeUsd: number;
-  leverage?: number;
-  entryPrice?: number;
-  customStopLoss?: number;
-  customTakeProfit?: number;
-  hftAnalysis?: any;
-  timesAndTrades?: any[];
-  account?: TradingAccount;
-  positions?: TradePosition[];
-  orderNote?: string;
-  useAvailableMarginRisk?: boolean;
   isQuickProfitExitEnabled?: boolean;
   targetProfitUsd?: number;
   isTimeManagementEnabled?: boolean;
@@ -190,5 +72,109 @@ export interface ExecuteHftOrderParams {
   timeDecayProfitTargetUsd?: number;
   isDynamicTrailingStopEnabled?: boolean;
   isAggressionTriggerEnabled?: boolean;
+  aggressionTriggerStatus?: string;
+  executionLogs: string[];
+  
+  marketReversalWarning?: boolean;
+  marketReversalActionApplied?: MarketReversalPolicy | boolean;
+  timeLimitIgnoredLogAdded?: boolean;
+  timeLimitLossHoldingLogAdded?: boolean;
+  aiDivergenceIgnoredLogAdded?: boolean;
 }
 
+export interface ExecuteHftOrderParams {
+  symbol: string;
+  coinName?: string;
+  side: PositionSide;
+  sizeUsd: number;
+  currentPrice: number;
+  entryPrice?: number;
+  leverage?: number;
+  hftAnalysis?: any;
+  timesAndTrades?: any;
+  orderBookReading?: any;
+  isAggressionTriggerEnabled?: boolean;
+  isRobotBypassEnabled?: boolean;
+  isQuickProfitExitEnabled?: boolean;
+  targetProfitUsd?: number;
+  isTimeManagementEnabled?: boolean;
+  maxOperationTimeMinutes?: number;
+  timeDecayProfitTargetUsd?: number;
+  isDynamicTrailingStopEnabled?: boolean;
+  orderNote?: string;
+  
+  account?: TradingAccount;
+  positions?: TradePosition[];
+  customStopLoss?: number;
+  customTakeProfit?: number;
+}
+
+export interface ArmedOrderTrigger {
+  id: string;
+  symbol: string;
+  coinName?: string;
+  side?: PositionSide;
+  targetSide?: PositionSide;
+  triggerPrice?: number;
+  mode?: OrderTriggerMode;
+  triggerMode?: OrderTriggerMode;
+  status: 'ARMED' | 'EXECUTED' | 'CANCELLED' | 'TRIGGERED';
+  timestamp?: number;
+  
+  minAggressionVolumeUsd?: number;
+  autoRearmOnClose?: boolean;
+  sizeUsd?: number;
+  leverage?: number;
+  armedAt?: number;
+  requiredCondition?: string;
+  triggerLogs?: string[];
+  executedPositionId?: string;
+  executedPrice?: number;
+  executedAt?: number;
+  currentAggressionStatus?: string;
+  lastTapeCheckTime?: number;
+  buyAggressionPct?: number;
+  sellAggressionPct?: number;
+  aggressionVolumeDetectedUsd?: number;
+  reason?: string;
+}
+
+export interface TradingAccount {
+  operationMode: OperationMode;
+  binanceConfig?: BinanceApiConfig;
+  activeBroker?: 'BINANCE';
+  demoBalanceUsd: number;
+  availableMarginUsd: number;
+  totalRealizedPnlUsd: number;
+  isAutoTradingEnabled: boolean;
+  
+  // Strategy & Risk Settings
+  isAggressionTriggerEnabled?: boolean;
+  isRobotBypassEnabled?: boolean;
+  minConfluenceScore?: number;
+  reentryCooldownSeconds?: number;
+  maxRiskPerTradePct?: number;
+  isInvertedExecutionEnabled?: boolean;
+  
+  // Strategy Modes
+  isQuickProfitExitEnabled?: boolean;
+  targetProfitUsd?: number;
+  isTimeManagementEnabled?: boolean;
+  maxOperationTimeMinutes?: number;
+  timeDecayProfitTargetUsd?: number;
+  isDynamicTrailingStopEnabled?: boolean;
+  isAiDivergenceExitEnabled?: boolean;
+  trailingStepUsd?: number;
+  
+  // Weights
+  customWeightLayer1And2?: number;
+  customWeightTechnical?: number;
+  
+  // Market Guard
+  isMarketReversalGuardEnabled?: boolean;
+  marketReversalPolicy?: MarketReversalPolicy;
+  
+  // Selection
+  assetSelectionMode?: AssetSelectionMode;
+  selectedSymbols?: string[];
+}

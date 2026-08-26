@@ -286,7 +286,7 @@ export function generateLocalHFTConfluenceAnalysis(
     mvrvDisplay = `${rawMvrv} (${rawMvrv < 1.5 ? 'Zona de Subvalorização' : rawMvrv < 2.4 ? 'Acúmulo Saudável' : 'Expansão de Ciclo'})`;
   }
 
-  const fundamentalSignal = fundamentalScore >= 60 ? 'COMPRA' : fundamentalScore <= 45 ? 'VENDA' : 'NEUTRO';
+  const fundamentalSignal = fundamentalScore >= 50 ? 'COMPRA' : fundamentalScore < 50 ? 'VENDA' : 'NEUTRO';
   const fundamentalStatus = fundamentalScore >= 75 ? 'Métricas de Rede Fortes & Inflow Positivo'
     : fundamentalScore >= 55 ? 'Consolidação de Rede & TVL Estável'
     : 'Retração On-Chain & Pressão de Saída';
@@ -327,7 +327,7 @@ export function generateLocalHFTConfluenceAnalysis(
   // -------------------------------------------------------------
   const technicalScoreSummary = generateTechnicalScoreSummary(crypto, isBullish, filterConfig);
   const technicalScore = technicalScoreSummary.overallScore;
-  const technicalSignal: 'COMPRA' | 'VENDA' | 'NEUTRO' = technicalScore >= 58 ? 'COMPRA' : technicalScore <= 45 ? 'VENDA' : 'NEUTRO';
+  const technicalSignal: 'COMPRA' | 'VENDA' | 'NEUTRO' = technicalScore >= 50 ? 'COMPRA' : technicalScore < 50 ? 'VENDA' : 'NEUTRO';
   const technicalStatus = technicalScore >= 75 ? 'Médias Móveis Alinhadas em Alta & Expansão de Volatilidade'
     : technicalScore >= 55 ? 'Consolidação Técnica Acima de Suportes Chave'
     : 'Pressão Vendedora Abaixo das Médias Principais';
@@ -340,7 +340,7 @@ export function generateLocalHFTConfluenceAnalysis(
   const sellPressure = orderFlowData ? orderFlowData.sellPressurePct : (100 - buyPressure);
   const cvd = orderFlowData ? orderFlowData.cvdAccumulated : (isBullish ? 215000 : -145000);
   const orderFlowScore = Math.min(97, Math.max(18, Math.round(buyPressure)));
-  const orderFlowSignal = orderFlowScore >= 55 ? 'COMPRA' : orderFlowScore <= 45 ? 'VENDA' : 'NEUTRO';
+  const orderFlowSignal = orderFlowScore >= 50 ? 'COMPRA' : orderFlowScore < 50 ? 'VENDA' : 'NEUTRO';
   const orderFlowStatus = orderFlowScore >= 65 ? 'Desbalanço Comprador Ativo (Agressão no Ask)'
     : orderFlowScore >= 50 ? 'Equilíbrio de Livro & Absorção Passiva'
     : 'Desbalanço Vendedor Ativo (Agressão no Bid)';
@@ -352,7 +352,7 @@ export function generateLocalHFTConfluenceAnalysis(
   const overallPrimaryScore = Math.round(
     fundamentalScore * 0.25 + sentimentScore * 0.25 + technicalScore * 0.25 + orderFlowScore * 0.25
   );
-  const primarySignal = overallPrimaryScore >= 58 ? 'COMPRA' : overallPrimaryScore <= 45 ? 'VENDA' : 'NEUTRO';
+  const primarySignal = overallPrimaryScore >= 50 ? 'COMPRA' : overallPrimaryScore < 50 ? 'VENDA' : 'NEUTRO';
 
   // -------------------------------------------------------------
   // SECONDARY VALIDATION (Layer 2: 100-Level Book & Tape Reading)
@@ -369,7 +369,7 @@ export function generateLocalHFTConfluenceAnalysis(
   const tapeValidationScore = Math.min(97, Math.max(30, Math.round((isBullish ? 75 : 40) + (cvd > 0 ? 15 : -10))));
 
   const secondaryScore = Math.round(bookValidationScore * 0.5 + tapeValidationScore * 0.5);
-  const secondarySignal = secondaryScore >= 58 ? 'CONFIRMADO COMPRA' : secondaryScore <= 45 ? 'CONFIRMADO VENDA' : 'DIVERGÊNCIA / AGUARDAR';
+  const secondarySignal = secondaryScore >= 50 ? 'CONFIRMADO COMPRA' : secondaryScore < 50 ? 'CONFIRMADO VENDA' : 'DIVERGÊNCIA / AGUARDAR';
 
   // -------------------------------------------------------------
   // WEIGHTED CONFLUENCE SYNTHESIS (40% Layer 1 + Layer 2 Holistic & Pareto vs 60% Advanced Technical Indicators)
@@ -401,7 +401,7 @@ export function generateLocalHFTConfluenceAnalysis(
   } else {
     finalSignal = 'AGUARDAR CONFLUÊNCIA';
     alignmentStatus = 'DIVERGÊNCIA DE FLUXO';
-    confluenceScorePct = Math.max(45, masterWeightedScore);
+    confluenceScorePct = Math.max(50, masterWeightedScore);
   }
 
   // -------------------------------------------------------------
@@ -417,7 +417,7 @@ export function generateLocalHFTConfluenceAnalysis(
   const tp3 = isLong ? Number((price * (1 + stepRatio * 12.5)).toFixed(dec)) : Number((price * (1 - stepRatio * 12.5)).toFixed(dec));
   const sl = isLong ? Number((price * (1 - stepRatio * 2.8)).toFixed(dec)) : Number((price * (1 + stepRatio * 2.8)).toFixed(dec));
 
-  const finalConfluenceScore = Math.min(98, Math.max(55, confluenceScorePct));
+  const finalConfluenceScore = Math.min(98, Math.max(50, confluenceScorePct));
 
   // -------------------------------------------------------------
   // PARETO CRITICALITY & MULTI-LAYER SYNTHESIS (80/20 High-Probability Focus)
@@ -436,7 +436,7 @@ export function generateLocalHFTConfluenceAnalysis(
     ? 'CRITICIDADE MÁXIMA (ALTO IMPACTO PARETO - 80% GANHO / 20% CONFLUÊNCIA)'
     : finalConfluenceScore >= 70
     ? 'CRITICIDADE ALTA (PADRÃO INSTITUCIONAL EXPANSIVO)'
-    : finalConfluenceScore >= 55
+    : finalConfluenceScore >= 50
     ? 'CRITICIDADE MODERADA (ZONA DE EQUILÍBRIO)'
     : 'BAIXA CRITICIDADE (DIVERGÊNCIA / AGUARDAR)';
 
@@ -677,16 +677,28 @@ export async function fetchServerHFTConfluenceAnalysis(crypto: CryptoMention, or
     }
 
     const data = await res.json();
+    const localFallback = generateLocalHFTConfluenceAnalysis(crypto, orderFlowData, forumPosts, filterConfig);
+
     if (data && data.success && data.result) {
-      // Patch the server response with the locally computed Technical Score Summary
-      // to ensure interactive filters work seamlessly with server data
+      const fullResult: HighFrequencyConfluenceResult = {
+        ...localFallback,
+        ...data.result,
+        primaryAnalysis: {
+          ...localFallback.primaryAnalysis,
+          ...(data.result.primaryAnalysis || {})
+        },
+        secondaryValidation: {
+          ...localFallback.secondaryValidation,
+          ...(data.result.secondaryValidation || {})
+        }
+      };
+
       const isBullish = (crypto.change24h || 0) >= 0;
       const techSummary = generateTechnicalScoreSummary(crypto, isBullish, filterConfig);
-      data.result.technicalScoreSummary = techSummary;
+      fullResult.technicalScoreSummary = techSummary;
       
-      // Patch the Pareto array to include the updated score if it exists
-      if (data.result.paretoCriticality && data.result.paretoCriticality.layerBreakdown) {
-        const techLayer = data.result.paretoCriticality.layerBreakdown.find((l: any) => l.category === 'TECNICO');
+      if (fullResult.paretoCriticality && fullResult.paretoCriticality.layersBreakdown) {
+        const techLayer = fullResult.paretoCriticality.layersBreakdown.find((l: any) => l.category === 'TECNICO');
         if (techLayer) {
            techLayer.rawScore = techSummary.overallScore;
            techLayer.criticalityState = techSummary.overallScore >= 58 ? 'CRÍTICO_COMPRA' : techSummary.overallScore <= 45 ? 'CRÍTICO_VENDA' : 'NEUTRO';
@@ -694,10 +706,9 @@ export async function fetchServerHFTConfluenceAnalysis(crypto: CryptoMention, or
         }
       }
 
-      hftCache.set(cacheKey, data.result, 3000); // Cache for 3 seconds
-      return data.result;
+      hftCache.set(cacheKey, fullResult, 3000); // Cache for 3 seconds
+      return fullResult;
     }
-    const localFallback = generateLocalHFTConfluenceAnalysis(crypto, orderFlowData, forumPosts, filterConfig);
     return localFallback;
   } catch (err) {
     console.warn('Using local high-frequency confluence engine due to network fallback:', err);

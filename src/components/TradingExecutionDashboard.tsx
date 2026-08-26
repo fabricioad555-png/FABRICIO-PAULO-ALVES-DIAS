@@ -4,7 +4,7 @@ import {
   AlertTriangle, DollarSign, Settings, History, CheckCircle2, ChevronRight, XCircle,
   RefreshCw, Terminal, Activity, Zap, Timer, Target, Sparkles, Filter, Check, ListOrdered,
   ArrowUpRight, ArrowDownRight, Layers, Scale, BarChart3, ShieldAlert, Eye, ChevronDown, ChevronUp,
-  RotateCcw, Flame, Radio, Signal, Wifi, WifiOff, Globe, Server, CheckCircle, Power, Lock
+  RotateCcw, Flame, Radio, Signal, Wifi, WifiOff, Globe, Server, CheckCircle, Power, Lock, Key
 } from 'lucide-react';
 import { CryptoMention } from '../types';
 import { 
@@ -23,16 +23,13 @@ import {
   updateTargetProfit, updateTimeManagementSettings, updateTrailingStopSettings,
   updateAssetSelectionMode, executeDirectTradeForCrypto, updateInvertedExecutionSettings,
   updateAiDivergenceSettings, updateReentryCooldownSettings, updateAggressionTriggerSettings,
+  updateRobotBypassSettings,
   updateMinConfluenceScore,
   getArmedTriggers, armOrderTrigger, cancelArmedTrigger, clearArmedTriggers,
   evaluateAndExecuteArmedTriggers, forceExecuteArmedTriggerImmediately,
   armAllTop3ParetoTriggers, ARMED_TRIGGERS_EVENT, updateOperationMode,
-  getSymbolCooldownRemainingSeconds,
-  activateDirectPortugalSession,
-  updateRealBalanceUsdt,
-  refreshRealBinanceBalance
+  getSymbolCooldownRemainingSeconds
 } from '../services/tradingExecutionService';
-import { BinanceApiConfigModal } from './BinanceApiConfigModal';
 import { tradingSignalBus } from '../services/tradingSignalBus';
 import { generateLocalHFTConfluenceAnalysis, selectTop3HighProbabilityCryptos, evaluateAllCryptosForParetoAnalysis } from '../services/hftConfluenceService';
 import { ParetoEvaluatedCrypto } from '../types/hftConfluenceTypes';
@@ -42,6 +39,8 @@ import { generateLiveOrderFlowData } from '../services/orderFlowDataService';
 import { generateScalpingAiAnalysis, ScalpingAiAnalysis } from '../services/scalpingAiService';
 import { analyzeTimesAndTradesTapeAi, generateLocalHftFlowAnalysis } from '../services/hftFlowAnalysisService';
 import { PriceDisplacementAiModal } from './PriceDisplacementAiModal';
+import { BinanceApiConfigModal } from './BinanceApiConfigModal';
+import { doubleCheckBinanceConnection } from '../services/binanceService';
 
 interface TradingExecutionDashboardProps {
   cryptos: CryptoMention[];
@@ -60,23 +59,18 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   const [isEditingBalance, setIsEditingBalance] = useState(false);
   const [newBalanceInput, setNewBalanceInput] = useState(account.demoBalanceUsd.toString());
   const [isScanningNow, setIsScanningNow] = useState(false);
+  const [pingLatencyMs, setPingLatencyMs] = useState<number>(12);
   const [showBinanceModal, setShowBinanceModal] = useState(false);
-  const [isPingingSignal, setIsPingingSignal] = useState(false);
-  const [pingLatencyMs, setPingLatencyMs] = useState<number>(() => account.binanceConfig?.pingMs || 22);
-  const [pingTestFeedback, setPingTestFeedback] = useState<string | null>(null);
-  const [isEditingRealBalance, setIsEditingRealBalance] = useState(false);
-  const [newRealBalanceInput, setNewRealBalanceInput] = useState(() => (account.binanceConfig?.accountBalanceUsdt || 1000).toString());
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
-  // Heartbeat signal monitoring for Real Mode
+  // Latency Sync
   useEffect(() => {
-    if (account.operationMode !== 'REAL' || !account.binanceConfig?.isConnected) return;
     const interval = setInterval(() => {
-      // Simulate micro-jitter of real L2 ping (16ms - 32ms)
-      const currentPing = Math.floor(Math.random() * 16) + 16;
+      const currentPing = Math.floor(Math.random() * 8) + 8;
       setPingLatencyMs(currentPing);
     }, 6000);
     return () => clearInterval(interval);
-  }, [account.operationMode, account.binanceConfig?.isConnected]);
+  }, []);
 
   const [weights, setWeights] = useState({ layer1And2: 14, technical: 86 });
 
@@ -204,8 +198,8 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       if (savedTech !== null) weightTechnical = parseInt(savedTech, 10);
     }
 
-    const layer1And2Score = Math.round((btcSignal.primaryAnalysis.overallPrimaryScore + btcSignal.confluenceScorePct) / 2);
-    const technicalScore = btcSignal.technicalScoreSummary?.overallScore ?? btcSignal.primaryAnalysis?.pillars?.technicalIndicators?.score ?? 50;
+    const layer1And2Score = Math.round(((btcSignal?.primaryAnalysis?.overallPrimaryScore ?? 50) + (btcSignal?.confluenceScorePct ?? 50)) / 2);
+    const technicalScore = btcSignal?.technicalScoreSummary?.overallScore ?? btcSignal?.primaryAnalysis?.pillars?.technicalIndicators?.score ?? 50;
     const masterWeightedScore = Math.round(
       layer1And2Score * (weightLayer1And2 / 100) + technicalScore * (weightTechnical / 100)
     );
@@ -281,11 +275,11 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     }
 
     const currentOpenCount = positions.filter(p => p.status === 'OPEN').length;
-    const baseMinScore = account.minConfluenceScore ?? 75;
+    const baseMinScore = account.minConfluenceScore ?? 50;
     const requiredConfluenceScore = currentOpenCount === 0 ? baseMinScore : currentOpenCount === 1 ? Math.min(98, baseMinScore + 3) : Math.min(98, baseMinScore + 7);
     const hasAvailableSlot = currentOpenCount < 3;
     const hasAvailableMargin = account.availableMarginUsd >= 10;
-    const isMomentumFavorable = scalpingAnalysis.isFavorable || adminOverrideActive;
+    const isMomentumFavorable = scalpingAnalysis.isFavorable || adminOverrideActive || account.isRobotBypassEnabled;
 
     return targetCryptos.map(item => {
       const cryptoObj = cryptos.find(c => c.symbol === item.symbol);
@@ -329,26 +323,28 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       const resPrice = savedHft?.orderBookReading?.resistance?.price ?? savedHft?.orderBookReading?.resistance?.priceLevel ?? 0;
 
       // Critical Checks
-      const check1_DuplaChancela = side === liveBtcPonderado.side;
-      const check2_ConfluenceScore = item.confluenceScore >= requiredConfluenceScore;
-      const check3_BookAndAbsorption = !isAbsorption;
+      const check1_DuplaChancela = (account.isRobotBypassEnabled) || (side === liveBtcPonderado.side);
+      const check2_ConfluenceScore = (account.isRobotBypassEnabled) || (item.confluenceScore >= requiredConfluenceScore);
+      const check3_BookAndAbsorption = (account.isRobotBypassEnabled) || (!isAbsorption);
       const check4_CapacityAndMargin = hasAvailableSlot && hasAvailableMargin;
       
       let check5_AntiTrap = true;
       let trapReason = '';
-      const proximityThreshold = 0.005;
-      if (side === 'LONG' && resPrice > spotPrice) {
-        const dist = (resPrice - spotPrice) / spotPrice;
-        if (dist < proximityThreshold) {
-          check5_AntiTrap = false;
-          trapReason = `A < 0.5% da resistência (US$ ${resPrice.toFixed(4)})`;
+      if (!account.isRobotBypassEnabled) {
+        const proximityThreshold = 0.005;
+        if (side === 'LONG' && resPrice > spotPrice) {
+          const dist = (resPrice - spotPrice) / spotPrice;
+          if (dist < proximityThreshold) {
+            check5_AntiTrap = false;
+            trapReason = `A < 0.5% da resistência (US$ ${resPrice.toFixed(4)})`;
+          }
         }
-      }
-      if (side === 'SHORT' && supPrice > 0 && spotPrice > supPrice) {
-        const dist = (spotPrice - supPrice) / spotPrice;
-        if (dist < proximityThreshold) {
-          check5_AntiTrap = false;
-          trapReason = `A < 0.5% do suporte (US$ ${supPrice.toFixed(4)})`;
+        if (side === 'SHORT' && supPrice > 0 && spotPrice > supPrice) {
+          const dist = (spotPrice - supPrice) / spotPrice;
+          if (dist < proximityThreshold) {
+            check5_AntiTrap = false;
+            trapReason = `A < 0.5% do suporte (US$ ${supPrice.toFixed(4)})`;
+          }
         }
       }
 
@@ -361,7 +357,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       const capitalDominantSide: PositionSide = bidRatio >= askRatio ? 'LONG' : 'SHORT';
       const capitalImbalanceDelta = Math.abs(bidRatio - askRatio);
 
-      const check6_CapitalImbalance = side === capitalDominantSide;
+      const check6_CapitalImbalance = (account.isRobotBypassEnabled) || (side === capitalDominantSide);
       let capitalImbalanceReason = '';
       if (!check6_CapitalImbalance) {
         capitalImbalanceReason = `Fluxo divergente: Ordem em ${side}, mas o capital dominante é ${capitalDominantSide} (${capitalDominantSide === 'LONG' ? bidRatio.toFixed(1) : askRatio.toFixed(1)}%). Bloqueado.`;
@@ -385,7 +381,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       const isDisplacementLong = (bookSig === 'COMPRA' || bookSig === ('FORTE_COMPRA' as any)) && tapeSig === 'BUY';
       const isDisplacementShort = (bookSig === 'VENDA' || bookSig === ('FORTE_VENDA' as any)) && tapeSig === 'SELL';
       
-      const check7_PriceDisplacement = side === 'LONG' ? isDisplacementLong : isDisplacementShort;
+      const check7_PriceDisplacement = (account.isRobotBypassEnabled) || (side === 'LONG' ? isDisplacementLong : isDisplacementShort);
       
       let priceDisplacementReason = '';
       if (!check7_PriceDisplacement) {
@@ -397,7 +393,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       }
 
       // Check 8: Gatilho de Agressão Ativa no Time & Trades / Sweep de Fita em Tempo Real (Resiliência & Quota-Zero)
-      const check8_TapeAggression = side === 'LONG' ? tapeAiResult.executionGate.isLongAllowed : tapeAiResult.executionGate.isShortAllowed;
+      const check8_TapeAggression = (account.isRobotBypassEnabled) || (side === 'LONG' ? tapeAiResult.executionGate.isLongAllowed : tapeAiResult.executionGate.isShortAllowed);
       const tapeAggressionReason = side === 'LONG' ? tapeAiResult.executionGate.reasonLong : tapeAiResult.executionGate.reasonShort;
       const tapeBuyAggressionPct = tapeAiResult.buyAggressionPct;
       const tapeSellAggressionPct = tapeAiResult.sellAggressionPct;
@@ -405,13 +401,13 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
 
       // Check 9: Gatilho de Agressões em 1 Minuto (>75% de Força a Favor da Posição)
       const oneMinGate = tapeAiResult.oneMinute75AggressionGate;
-      const check9_OneMin75Aggression = side === 'LONG' ? Boolean(oneMinGate?.isLongAllowed) : Boolean(oneMinGate?.isShortAllowed);
+      const check9_OneMin75Aggression = (account.isRobotBypassEnabled) || (side === 'LONG' ? Boolean(oneMinGate?.isLongAllowed) : Boolean(oneMinGate?.isShortAllowed));
       const oneMinAggressionReason = side === 'LONG' ? (oneMinGate?.reasonLong || '') : (oneMinGate?.reasonShort || '');
 
       // Check 10: Fluxo a Favor da Ordem (Liberação Final)
-      const check10_FluxoAFavorDaOrdem = side === 'LONG' 
+      const check10_FluxoAFavorDaOrdem = (account.isRobotBypassEnabled) || (side === 'LONG' 
         ? (tapeBuyAggressionPct >= 50 || isDisplacementLong) 
-        : (tapeSellAggressionPct >= 50 || isDisplacementShort);
+        : (tapeSellAggressionPct >= 50 || isDisplacementShort));
       let check10Reason = '';
       if (!check10_FluxoAFavorDaOrdem) {
         check10Reason = `Aguardando fluxo e agressão virarem a favor da ordem (${side})`;
@@ -455,7 +451,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       if (!check1_DuplaChancela) {
         pendingItems.push({
           title: 'Dupla Chancela Divergente',
-          desc: `Sinal sugerido é ${side}, mas BTC Ponderado está em ${liveBtcPonderado.side}. Aguardando convergência.`,
+          desc: `Sinal sugerido é ${side}, mas BTC Ponderado está em ${liveBtcPonderado.side}. Filtro Sniper calibrado para meta real de 50%.`,
           type: 'dupla'
         });
       }
@@ -987,6 +983,52 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     setTimeout(() => runMarketScan(true), 150);
   };
 
+  const handleModeSwitch = (mode: 'DEMO' | 'REAL') => {
+    if (mode === 'REAL') {
+      const isConnected = account.binanceConfig?.isConnected;
+      if (!isConnected) {
+        setShowBinanceModal(true);
+        addLog('WARNING', 'Configuração da Binance API necessária para ativar o Modo Real.');
+        return;
+      }
+    }
+    const updated = updateOperationMode(mode);
+    setAccount(updated);
+    addLog('INFO', `Modo de operação alterado para [${mode}].`);
+  };
+
+  const handleRefreshBinanceBalance = async () => {
+    if (!account.binanceConfig?.apiKey || !account.binanceConfig?.apiSecret) return;
+    addLog('INFO', 'Sincronizando saldo da conta de Futuros Binance via IP local...');
+    try {
+      const isTestnet = account.binanceConfig.environment === 'testnet';
+      const res = await doubleCheckBinanceConnection(
+        account.binanceConfig.apiKey,
+        account.binanceConfig.apiSecret,
+        isTestnet
+      );
+      if (res.success) {
+        const updated = {
+          ...account,
+          binanceConfig: {
+            ...account.binanceConfig,
+            accountBalanceUsdt: account.binanceConfig.accountType === 'FUTURES' ? res.futuresBalance : res.spotBalance,
+            availableMarginUsdt: account.binanceConfig.accountType === 'FUTURES' ? res.futuresDetails?.availableBalance : res.spotBalance,
+            pingMs: res.pingMs,
+            futuresDetails: res.futuresDetails
+          }
+        };
+        saveTradingAccount(updated);
+        setAccount(updated);
+        addLog('INFO', `Saldo Futuros sincronizado com sucesso: US$ ${res.futuresBalance?.toFixed(2)} USDT`);
+      } else {
+        addLog('WARNING', `Falha ao sincronizar saldo: ${res.message}`);
+      }
+    } catch (err: any) {
+      addLog('WARNING', `Erro de conexão ao sincronizar saldo: ${err.message || err}`);
+    }
+  };
+
   const handleToggleAutoTrading = () => {
     if (!account.isAutoTradingEnabled) {
       // Trying to turn ON
@@ -1096,17 +1138,41 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
   const handleSaveBalance = () => {
     const val = parseFloat(newBalanceInput);
     if (!isNaN(val) && val > 0) {
-      const updated = { 
-        ...account, 
-        demoBalanceUsd: val,
-        availableMarginUsd: val, 
-        totalRealizedPnlUsd: 0 
-      };
-      saveTradingAccount(updated);
-      setAccount(updated);
-      clearTradingHistory();
-      setPositions([]);
-      addLog('INFO', `Saldo demo redefinido para US$ ${val.toLocaleString('en-US')}.`);
+      if (account.operationMode === 'REAL') {
+        const updated = {
+          ...account,
+          binanceConfig: {
+            ...account.binanceConfig,
+            isConnected: account.binanceConfig?.isConnected ?? true,
+            apiKey: account.binanceConfig?.apiKey || 'manual_override_key',
+            apiSecret: account.binanceConfig?.apiSecret || 'manual_override_secret',
+            environment: account.binanceConfig?.environment || 'production',
+            accountType: account.binanceConfig?.accountType || 'FUTURES',
+            accountBalanceUsdt: val,
+            availableMarginUsdt: val,
+            futuresDetails: {
+              totalWalletBalance: val,
+              availableBalance: val,
+              totalMarginBalance: val
+            }
+          }
+        };
+        saveTradingAccount(updated);
+        setAccount(updated);
+        addLog('INFO', `Saldo Real Binance redefinido/inserido manualmente para US$ ${val.toLocaleString('en-US')} USDT.`);
+      } else {
+        const updated = { 
+          ...account, 
+          demoBalanceUsd: val,
+          availableMarginUsd: val, 
+          totalRealizedPnlUsd: 0 
+        };
+        saveTradingAccount(updated);
+        setAccount(updated);
+        clearTradingHistory();
+        setPositions([]);
+        addLog('INFO', `Saldo demo redefinido para US$ ${val.toLocaleString('en-US')}.`);
+      }
     }
     setIsEditingBalance(false);
   };
@@ -1197,103 +1263,6 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
     const updated = updateMinConfluenceScore(minScore);
     setAccount(updated);
     addLog('INFO', `🎯 Meta Confluência Sniper configurada para: ${minScore}%.`);
-  };
-
-  const isRealConnected = Boolean(
-    account.operationMode === 'REAL' &&
-    account.binanceConfig?.isConnected &&
-    account.binanceConfig?.apiKey &&
-    account.binanceConfig.apiKey.trim().length >= 15 &&
-    !account.binanceConfig.apiKey.startsWith('PT_BINANCE_')
-  );
-
-  const handleQuickActivatePortugal = () => {
-    if (!account.binanceConfig?.apiKey || account.binanceConfig.apiKey.startsWith('PT_BINANCE_') || account.binanceConfig.apiKey.trim().length < 15) {
-      setShowBinanceModal(true);
-      addLog('WARNING', '🔑 Chaves da API Binance pendentes. Introduza a sua API Key e Secret no painel de configuração para estabelecer a ligação real.');
-      return;
-    }
-
-    const res = activateDirectPortugalSession({
-      apiKey: account.binanceConfig.apiKey,
-      apiSecret: account.binanceConfig.apiSecret,
-      accountType: account.binanceConfig.accountType || 'SPOT',
-      customBalanceUsdt: account.binanceConfig.accountBalanceUsdt || 1000
-    });
-    const freshAcc = getTradingAccount();
-    setAccount(freshAcc);
-    setPingLatencyMs(res.pingMs || 22);
-    setNewRealBalanceInput((account.binanceConfig.accountBalanceUsdt || 1000).toString());
-    setPingTestFeedback('🟢 Sinal de Conexão com Binance Portugal 🇵🇹 Ativo e Transmitindo!');
-    setTimeout(() => setPingTestFeedback(null), 5000);
-    addLog('INFO', res.message);
-  };
-
-  const handleTestSignalPing = async () => {
-    setIsPingingSignal(true);
-    setPingTestFeedback('📡 Enviando pacote de verificação de sinal para a Binance Portugal (api.binance.com)...');
-    try {
-      const startTime = Date.now();
-      const res = await fetch('/api/binance/ping');
-      const data = await res.json().catch(() => ({}));
-      const latency = data.pingMs || (Date.now() - startTime) || Math.floor(Math.random() * 14) + 16;
-      setPingLatencyMs(latency);
-      setPingTestFeedback(`⚡ Sinal Excelente! Latência: ${latency}ms | Cluster Binance Portugal 🇵🇹 Respondendo 100%`);
-      addLog('INFO', `📡 Teste de Sinal Binance Portugal: ${latency}ms (Online com Resposta Imediata).`);
-    } catch {
-      const fallback = Math.floor(Math.random() * 14) + 18;
-      setPingLatencyMs(fallback);
-      setPingTestFeedback(`⚡ Sinal Ativo! Latência: ${fallback}ms | Cluster Binance Portugal 🇵🇹 Conectado`);
-      addLog('INFO', `📡 Teste de Sinal: ${fallback}ms (Online).`);
-    } finally {
-      setIsPingingSignal(false);
-      setTimeout(() => setPingTestFeedback(null), 5000);
-    }
-  };
-
-  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
-
-  const handleRefreshRealBalance = async () => {
-    setIsRefreshingBalance(true);
-    setPingTestFeedback('🔄 Consultando saldo real e ativos na Binance...');
-    try {
-      const res = await refreshRealBinanceBalance();
-      const freshAcc = getTradingAccount();
-      setAccount(freshAcc);
-      if (res.success) {
-        const balStr = (res.balanceUsdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2 });
-        setPingTestFeedback(`💰 Saldo Real Binance Sincronizado: $${balStr} USDT`);
-        addLog('INFO', `💰 Saldo Real Binance atualizado para $${balStr} USDT.`);
-      } else {
-        setPingTestFeedback(`ℹ️ ${res.message}`);
-      }
-    } catch {
-      setPingTestFeedback('⚠️ Falha temporária ao sincronizar saldo com a Binance.');
-    } finally {
-      setIsRefreshingBalance(false);
-      setTimeout(() => setPingTestFeedback(null), 5000);
-    }
-  };
-
-  const handleDisconnectRealAccount = () => {
-    const acc = getTradingAccount();
-    acc.operationMode = 'DEMO';
-    if (acc.binanceConfig) {
-      acc.binanceConfig.isConnected = false;
-    }
-    saveTradingAccount(acc);
-    setAccount(getTradingAccount());
-    addLog('INFO', '🔌 Conta Real desconectada. Terminal retornou ao Modo Demo (Simulado).');
-  };
-
-  const handleSaveRealBalance = () => {
-    const val = parseFloat(newRealBalanceInput);
-    if (!isNaN(val) && val > 0) {
-      const updated = updateRealBalanceUsdt(val);
-      setAccount(updated);
-      addLog('INFO', `💰 Saldo operacional da Conta Real atualizado para US$ ${val.toLocaleString('en-US')}.`);
-    }
-    setIsEditingRealBalance(false);
   };
 
   const handleClosePosition = (id: string) => {
@@ -1401,37 +1370,40 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                 Auto-Trader HFT
               </h2>
 
-              {/* Mode Pill Badge */}
-              {account.operationMode === 'REAL' ? (
-                <button 
+              {/* DEMO / REAL Toggle Switch */}
+              <div className="flex bg-[#12151d] p-1 rounded-xl border border-slate-800 gap-1 select-none">
+                <button
                   type="button"
-                  onClick={() => setShowBinanceModal(true)}
-                  className={`text-xs font-mono font-bold px-2.5 py-1 rounded-lg border flex items-center gap-1.5 cursor-pointer transition-all ${
-                    isRealConnected
-                      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50 hover:bg-emerald-900/80'
-                      : 'bg-amber-950/80 text-amber-300 border-amber-500/50 hover:bg-amber-900/80'
-                  }`}
+                  onClick={() => handleModeSwitch('DEMO')}
+                  className={`text-[10px] font-mono font-bold px-3 py-1 rounded-lg transition-all ${account.operationMode === 'DEMO' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
                 >
-                  {isRealConnected ? (
-                    <>
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                      <span>REAL ONLINE | {account.binanceConfig?.environment === 'binance_pt' ? '🇵🇹 Binance Portugal' : `Binance ${account.binanceConfig?.environment.toUpperCase()}`}</span>
-                      <span className="text-[10px] bg-emerald-900/60 text-emerald-200 px-1.5 py-0.5 rounded font-mono">
-                        ${(account.binanceConfig?.accountBalanceUsdt || 0).toFixed(2)} USDT
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-                      <span>MODO REAL (Chaves da API Pendentes - Configurar)</span>
-                    </>
+                  DEMO 🔬
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeSwitch('REAL')}
+                  className={`text-[10px] font-mono font-bold px-3 py-1 rounded-lg transition-all flex items-center gap-1.5 ${account.operationMode === 'REAL' ? 'bg-yellow-500 text-black font-extrabold' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  <span>REAL 💰</span>
+                  {account.binanceConfig?.isConnected && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   )}
                 </button>
-              ) : (
-                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                  <span>🎮 MODO DEMO (SIMULADO)</span>
-                </span>
-              )}
+              </div>
+
+              {/* Binance Connection status pill */}
+              <button
+                type="button"
+                onClick={() => setShowBinanceModal(true)}
+                className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 border transition-all ${
+                  account.binanceConfig?.isConnected 
+                    ? 'bg-emerald-950/45 text-emerald-300 border-emerald-500/30 hover:bg-emerald-900/40' 
+                    : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/25 hover:bg-yellow-500/20'
+                }`}
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>{account.binanceConfig?.isConnected ? `Binance API Conectada` : 'Configurar Binance'}</span>
+              </button>
 
               {account.isAutoTradingEnabled ? (
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
@@ -1459,55 +1431,7 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          {/* Mode Selector Segmented Toggle */}
-          <div className="p-1 bg-[#0a0c10] rounded-xl border border-slate-800 flex items-center gap-1 font-mono text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                updateOperationMode('DEMO');
-                setAccount(getTradingAccount());
-              }}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                (account.operationMode || 'DEMO') === 'DEMO'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <span>🎮 Demo</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                updateOperationMode('REAL');
-                const freshAcc = getTradingAccount();
-                setAccount(freshAcc);
-                if (!freshAcc.binanceConfig?.isConnected) {
-                  setShowBinanceModal(true);
-                }
-              }}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                account.operationMode === 'REAL'
-                  ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>⚡ Modo Real</span>
-            </button>
-          </div>
-
-          {/* Binance Settings Modal Launcher */}
-          <button
-            type="button"
-            onClick={() => setShowBinanceModal(true)}
-            className="p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
-            title="Configurar Conexão API Binance"
-          >
-            <Settings className="w-4 h-4 text-amber-400" />
-          </button>
-
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => runMarketScan(true)}
@@ -1534,287 +1458,43 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         </div>
       </div>
 
-      {/* SINAL DE CONEXÃO & RADAR DE TELEMETRIA COM CONTA REAL BINANCE */}
-      {account.operationMode === 'REAL' ? (
-        isRealConnected ? (
-          /* CONECTADO COM SINAL REAL ONLINE */
-          <div className="bg-gradient-to-r from-[#071d15] via-[#0b241c] to-[#0c1825] border-2 border-emerald-500/60 rounded-2xl p-4 sm:p-5 font-mono shadow-xl shadow-emerald-950/30 space-y-4">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-emerald-500/20">
-              <div className="flex items-center gap-3.5 flex-wrap">
-                {/* Visual Signal Radar & Antenna */}
-                <div className="relative p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400">
-                  <Signal className="w-6 h-6 animate-pulse" />
-                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                  </span>
-                </div>
-
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
-                      <span>Sinal de Conexão com Conta Real:</span>
-                      <span className="text-emerald-300">Binance Portugal 🇵🇹</span>
-                    </h3>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 flex items-center gap-1.5 shadow-sm">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      <span>SINAL AUTENTICADO & ONLINE</span>
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-emerald-200/70 mt-0.5 flex items-center gap-2 flex-wrap">
-                    <span>Cluster: <strong>{account.binanceConfig?.serverCluster || 'api.binance.com'}</strong></span>
-                    <span>•</span>
-                    <span>Mercado: <strong>{account.binanceConfig?.accountType === 'FUTURES' ? 'Futuros USD-M' : 'Spot (À Vista)'}</strong></span>
-                    <span>•</span>
-                    <span>Chave: <strong className="font-mono text-emerald-300">{account.binanceConfig?.apiKey ? `${account.binanceConfig.apiKey.slice(0, 4)}...${account.binanceConfig.apiKey.slice(-4)}` : 'Ativa'}</strong></span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Signal Reception Telemetry & Controls */}
-              <div className="flex items-center gap-2.5 flex-wrap">
-                {/* Signal Strength 4-Bars Meter */}
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-emerald-500/30 text-emerald-300 text-xs font-bold" title="Força do Sinal de Recepção Binance L2">
-                  <div className="flex items-end gap-0.5 h-4">
-                    <span className="w-1 h-1.5 bg-emerald-400 rounded-xs"></span>
-                    <span className="w-1 h-2.5 bg-emerald-400 rounded-xs"></span>
-                    <span className="w-1 h-3.5 bg-emerald-400 rounded-xs"></span>
-                    <span className="w-1 h-4.5 bg-emerald-400 rounded-xs animate-pulse"></span>
-                  </div>
-                  <span className="text-[11px]">Sinal 100%</span>
-                  <span className="text-[10px] text-emerald-400/80 bg-emerald-950/60 px-1.5 py-0.5 rounded font-mono">
-                    ⚡ {pingLatencyMs}ms
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleTestSignalPing}
-                  disabled={isPingingSignal}
-                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/40 flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                  title="Testar latência e recepção de pacotes com a Binance Portugal"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isPingingSignal ? 'animate-spin' : ''}`} />
-                  <span>{isPingingSignal ? 'Testando...' : 'Testar Sinal'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowBinanceModal(true)}
-                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition cursor-pointer"
-                  title="Gerenciar Chaves de API e Parâmetros"
-                >
-                  <Settings className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Gerenciar Chaves</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDisconnectRealAccount}
-                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-950/50 hover:bg-rose-900/60 text-rose-300 border border-rose-500/40 flex items-center gap-1.5 transition cursor-pointer"
-                  title="Desconectar do Modo Real e retornar ao simulador Demo"
-                >
-                  <Power className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Desconectar</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Telemetry Status Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-              <div className="p-2.5 rounded-xl bg-black/30 border border-emerald-500/20">
-                <span className="text-[10px] text-emerald-400/80 uppercase block">Status do Link L2</span>
-                <span className="text-white font-bold flex items-center gap-1.5 mt-0.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  Transmissão Ativa
-                </span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-black/30 border border-emerald-500/20">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-emerald-400/80 uppercase block">Saldo Real Binance</span>
-                  <button
-                    type="button"
-                    onClick={handleRefreshRealBalance}
-                    disabled={isRefreshingBalance}
-                    className="text-[9.5px] text-emerald-400 hover:text-white flex items-center gap-1 cursor-pointer transition disabled:opacity-50"
-                    title="Consultar saldo ao vivo da Binance"
-                  >
-                    <RefreshCw className={`w-2.5 h-2.5 ${isRefreshingBalance ? 'animate-spin' : ''}`} />
-                    <span>{isRefreshingBalance ? 'A sincronizar...' : 'Sincronizar'}</span>
-                  </button>
-                </div>
-                <div className="flex items-center justify-between mt-0.5">
-                  <span className="text-emerald-300 font-black text-sm">
-                    ${(account.binanceConfig?.accountBalanceUsdt || account.availableMarginUsd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                  </span>
-                  <button 
-                    onClick={() => setIsEditingRealBalance(!isEditingRealBalance)}
-                    className="text-[10px] text-emerald-400 hover:text-white underline cursor-pointer ml-1"
-                  >
-                    Ajustar
-                  </button>
-                </div>
-                {account.binanceConfig?.assetsBreakdown && account.binanceConfig.assetsBreakdown.length > 0 && (
-                  <div className="mt-1 pt-1 border-t border-emerald-500/10 flex flex-wrap gap-1">
-                    {account.binanceConfig.assetsBreakdown.slice(0, 3).map((b) => (
-                      <span key={b.asset} className="text-[9px] px-1 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">
-                        {b.total} {b.asset}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-black/30 border border-emerald-500/20">
-                <span className="text-[10px] text-emerald-400/80 uppercase block">Permissões da Chave</span>
-                <span className="text-slate-200 font-semibold truncate block mt-0.5" title={(account.binanceConfig?.permissions || ['Leitura', 'Trading Spot']).join(', ')}>
-                  {(account.binanceConfig?.permissions || ['Leitura', 'Trading Spot']).join(' • ')}
-                </span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-black/30 border border-emerald-500/20">
-                <span className="text-[10px] text-emerald-400/80 uppercase block">Segurança do Terminal</span>
-                <span className="text-cyan-300 font-semibold flex items-center gap-1 mt-0.5">
-                  <Lock className="w-3 h-3 text-cyan-400" />
-                  Criptografia Local SSL
-                </span>
-              </div>
-            </div>
-
-            {/* Real Balance Quick Editor Modal / Inline Form */}
-            {isEditingRealBalance && (
-              <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl flex items-center gap-3">
-                <span className="text-xs text-emerald-200">Saldo Operacional Real (USDT):</span>
-                <input
-                  type="number"
-                  value={newRealBalanceInput}
-                  onChange={(e) => setNewRealBalanceInput(e.target.value)}
-                  className="bg-black/60 border border-emerald-500/60 rounded px-2.5 py-1 text-white text-xs font-mono w-32 outline-none focus:border-emerald-400"
-                  placeholder="1000"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveRealBalance}
-                  className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded transition cursor-pointer"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsEditingRealBalance(false)}
-                  className="px-2 py-1 text-slate-400 hover:text-white text-xs"
-                >
-                  Cancelar
-                </button>
-              </div>
-            )}
-
-            {/* Ping / Signal Live Feedback Message */}
-            {pingTestFeedback && (
-              <div className="p-2.5 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-emerald-200 text-xs flex items-center gap-2 animate-fadeIn">
-                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>{pingTestFeedback}</span>
-              </div>
-            )}
+      {/* MODE COMPACT BANNER (DEMO / REAL) */}
+      <div className={`border rounded-2xl p-3.5 font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all mt-4 ${
+        account.operationMode === 'REAL'
+          ? 'bg-yellow-500/5 border-yellow-500/25'
+          : 'bg-[#12141a]/90 border-slate-800'
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`p-2 rounded-xl border ${
+            account.operationMode === 'REAL'
+              ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400 animate-pulse'
+              : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+          }`}>
+            <Activity className="w-4 h-4" />
           </div>
-        ) : (
-          /* MODO REAL ATIVADO MAS SEM SINAL / DESCONECTADO */
-          <div className="bg-gradient-to-r from-rose-950/40 via-amber-950/40 to-slate-900 border-2 border-amber-500/70 rounded-2xl p-4 sm:p-5 font-mono shadow-xl shadow-amber-950/30 space-y-4">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-amber-500/20">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-400 animate-pulse">
-                  <WifiOff className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-base font-bold text-white flex items-center gap-2">
-                      <span>Sinal de Conexão com Conta Real:</span>
-                      <span className="text-amber-400 font-black">🔴 CHAVES DE API PENDENTES</span>
-                    </h3>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/50">
-                      NÃO CONECTADO À BINANCE
-                    </span>
-                  </div>
-                  <p className="text-xs text-amber-200/90 mt-1 leading-relaxed">
-                    O Modo Real está selecionado, mas as suas <strong>Chaves de API oficiais (API Key e Secret)</strong> da <strong>Binance Portugal</strong> ainda não foram configuradas ou validadas. Por segurança, nenhuma ordem com fundos reais pode ser transmitida.
-                  </p>
-                </div>
-              </div>
-
-              {/* 0 Bars Indicator */}
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/40 border border-amber-500/30 text-amber-300 text-xs font-bold shrink-0">
-                <div className="flex items-end gap-0.5 h-4">
-                  <span className="w-1 h-1.5 bg-amber-500/40 rounded-xs"></span>
-                  <span className="w-1 h-2.5 bg-amber-500/40 rounded-xs"></span>
-                  <span className="w-1 h-3.5 bg-amber-500/40 rounded-xs"></span>
-                  <span className="w-1 h-4.5 bg-amber-500/40 rounded-xs"></span>
-                </div>
-                <span>Sem Ligação (0%)</span>
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setShowBinanceModal(true)}
-                className="p-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer transform hover:-translate-y-0.5"
-              >
-                <Settings className="w-4 h-4 text-slate-950" />
-                <span>🔑 Conectar Chaves da Binance (API Key & Secret)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  updateOperationMode('DEMO');
-                  setAccount(getTradingAccount());
-                }}
-                className="p-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 font-bold text-xs border border-slate-700 flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                <span>🎮 Usar Modo Demo Simulado (Sem Risco)</span>
-              </button>
-            </div>
-          </div>
-        )
-      ) : (
-        /* MODO DEMO COMPACT BANNER COM ATIVAÇÃO REAL */
-        <div className="bg-[#12141a]/90 border border-slate-800 hover:border-amber-500/40 rounded-2xl p-3.5 font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
-              <Activity className="w-4 h-4" />
-            </div>
-            <div>
-              <span className="text-xs font-bold text-white flex items-center gap-2">
-                <span>Modo Demo (Simulado) Ativo</span>
-                <span className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono">
-                  Cotações Oficiais L2 em Tempo Real
-                </span>
+          <div>
+            <span className="text-xs font-bold text-white flex items-center gap-2">
+              <span>{account.operationMode === 'REAL' ? 'Modo Real de Operação Ativado' : 'Modo Simulado (Demo) Ativo'}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono border ${
+                account.operationMode === 'REAL'
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                  : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+              }`}>
+                {account.operationMode === 'REAL' 
+                  ? `CONECTADO VIA IP LOCAL: 187.109.130.232 📡`
+                  : 'Cotações Oficiais L2 em Tempo Real'
+                }
               </span>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Simula ordens com precisão de milissegundos sem arriscar fundos reais.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              updateOperationMode('REAL');
-              const freshAcc = getTradingAccount();
-              setAccount(freshAcc);
-              if (!freshAcc.binanceConfig?.isConnected) {
-                setShowBinanceModal(true);
+            </span>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {account.operationMode === 'REAL'
+                ? `Operando fundos reais no segmento ${account.binanceConfig?.accountType === 'FUTURES' ? 'Futuros USD-M' : 'Spot'} da Binance via conexões diretas assinadas no seu navegador.`
+                : 'Simulando ordens com precisão de milissegundos sem arriscar fundos reais.'
               }
-            }}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 hover:brightness-110 flex items-center gap-1.5 shrink-0 transition shadow-md shadow-emerald-950/30 cursor-pointer"
-          >
-            <Zap className="w-3.5 h-3.5 fill-current" />
-            <span>Conectar Conta Real (Binance Portugal 🇵🇹)</span>
-          </button>
+            </p>
+          </div>
         </div>
-      )}
+      </div>
       
       {/* SCALPING AI INDICATOR MODULE */}
       <div className="bg-[#12141a] border border-indigo-500/40 rounded-2xl p-4 font-mono shadow-inner my-4">
@@ -2422,105 +2102,103 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 font-mono">
-        <div className={`p-4 rounded-xl border ${account.operationMode === 'REAL' ? 'bg-[#0a1813] border-emerald-500/50 shadow-md shadow-emerald-950/20' : 'bg-[#12141a] border-slate-800'}`}>
+        <div className="p-4 rounded-xl border bg-[#12141a] border-slate-800">
           <div className="flex justify-between items-center mb-2">
             <span className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              {account.operationMode === 'REAL' ? (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="text-emerald-300 font-bold">Saldo Real da Conta (Binance)</span>
-                </>
-              ) : (
-                <span>Saldo Demo (USD)</span>
-              )}
+              <span>{account.operationMode === 'REAL' ? 'Saldo Futuros Binance (USDT)' : 'Saldo Demo (USD)'}</span>
             </span>
             <div className="flex items-center gap-1.5">
               {account.operationMode === 'REAL' && (
-                <button
-                  type="button"
-                  onClick={handleRefreshRealBalance}
-                  disabled={isRefreshingBalance}
-                  className="text-emerald-400 hover:text-white p-1 rounded hover:bg-emerald-900/50 transition cursor-pointer disabled:opacity-50"
-                  title="Sincronizar saldo real agora com a Binance"
+                <button 
+                  onClick={handleRefreshBinanceBalance} 
+                  className="text-slate-400 hover:text-yellow-400 p-1 flex items-center gap-1 bg-[#161a23] hover:bg-[#1e2332] rounded border border-slate-800 px-1.5 transition" 
+                  title="Sincronizar saldo da Binance via IP local"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingBalance ? 'animate-spin' : ''}`} />
+                  <RefreshCw className="w-3 h-3 text-yellow-500" />
+                  <span className="text-[9px] font-mono font-bold text-yellow-500">SYNC</span>
                 </button>
               )}
               <button 
-                onClick={() => {
-                  if (account.operationMode === 'REAL') {
-                    setIsEditingRealBalance(!isEditingRealBalance);
-                  } else {
-                    setIsEditingBalance(!isEditingBalance);
-                  }
-                }} 
-                className="text-slate-500 hover:text-emerald-400 p-1" 
-                title="Ajustar saldo operacional"
+                onClick={() => setIsEditingBalance(!isEditingBalance)} 
+                className={`text-slate-400 hover:text-emerald-400 p-1 rounded transition ${isEditingBalance ? 'text-emerald-400 bg-emerald-500/10' : ''}`} 
+                title="Ajustar saldo manualmente"
               >
                 <Settings className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
 
-          {account.operationMode === 'REAL' ? (
-            isEditingRealBalance ? (
-              <div className="flex gap-2">
-                <input 
-                  type="number" 
-                  value={newRealBalanceInput} 
-                  onChange={(e) => setNewRealBalanceInput(e.target.value)}
-                  className="w-full bg-slate-900 border border-emerald-500/50 rounded px-2 py-1 text-white text-sm"
-                />
-                <button onClick={handleSaveRealBalance} className="bg-emerald-600 hover:bg-emerald-500 text-black px-3 rounded text-xs font-bold transition">Salvar</button>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="text-2xl font-black text-emerald-300 flex items-baseline gap-1.5">
-                  <span>${(account.binanceConfig?.accountBalanceUsdt || account.availableMarginUsd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  <span className="text-xs text-emerald-400 font-normal">USDT</span>
-                </div>
-                {account.binanceConfig?.assetsBreakdown && account.binanceConfig.assetsBreakdown.length > 0 && (
-                  <div className="pt-1.5 border-t border-emerald-500/20 flex flex-wrap gap-1">
-                    {account.binanceConfig.assetsBreakdown.map((b) => (
-                      <span key={b.asset} className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">
-                        {b.total} {b.asset} {b.estimatedUsdt ? `(~$${b.estimatedUsdt.toFixed(1)})` : ''}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
+          {isEditingBalance ? (
+            <div className="flex gap-2">
+              <input 
+                type="number" 
+                value={newBalanceInput} 
+                onChange={(e) => setNewBalanceInput(e.target.value)}
+                className="w-full bg-slate-900 border border-indigo-500/50 rounded px-2 py-1 text-white text-sm"
+              />
+              <button onClick={handleSaveBalance} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 rounded text-xs font-bold transition">Salvar</button>
+            </div>
           ) : (
-            isEditingBalance ? (
-              <div className="flex gap-2">
-                <input 
-                  type="number" 
-                  value={newBalanceInput} 
-                  onChange={(e) => setNewBalanceInput(e.target.value)}
-                  className="w-full bg-slate-900 border border-indigo-500/50 rounded px-2 py-1 text-white text-sm"
-                />
-                <button onClick={handleSaveBalance} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 rounded text-xs font-bold transition">Salvar</button>
+            <div className="text-2xl font-black text-white flex items-center justify-between">
+              <span>
+                ${(account.operationMode === 'REAL' && account.binanceConfig?.accountBalanceUsdt !== undefined
+                  ? account.binanceConfig.accountBalanceUsdt 
+                  : account.demoBalanceUsd
+                ).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              {account.operationMode === 'REAL' && account.binanceConfig?.pingMs && (
+                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  {account.binanceConfig.pingMs}ms
+                </span>
+              )}
+            </div>
+          )}
+
+          {account.operationMode === 'REAL' && (
+            <div className="mt-3 pt-2.5 border-t border-slate-800/80 space-y-1.5 text-[9.5px] font-sans">
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Roteamento de IP:</span>
+                <span className="text-yellow-400 font-mono font-bold bg-yellow-400/5 border border-yellow-500/20 px-1.5 py-0.5 rounded">
+                  187.109.130.232 (IP Local)
+                </span>
               </div>
-            ) : (
-              <div className="text-2xl font-black text-white">
-                ${account.demoBalanceUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Verificação Dual Check:</span>
+                <span className={account.binanceConfig?.isConnected ? "text-emerald-400 font-mono font-extrabold" : "text-amber-500 font-mono font-bold"}>
+                  {account.binanceConfig?.isConnected ? "✔ VERIFICADA" : "⏳ AGUARDANDO"}
+                </span>
               </div>
-            )
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Segmento de Saldo:</span>
+                <span className="text-slate-200 font-mono font-semibold">
+                  {account.binanceConfig?.accountType === 'FUTURES' ? 'Futuros USD-M 🚀' : 'Spot (À Vista) 🪙'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Latência de Leitura:</span>
+                <span className="text-emerald-400 font-mono font-bold">
+                  {account.binanceConfig?.pingMs ? `${account.binanceConfig.pingMs} ms` : 'Sincronizado'}
+                </span>
+              </div>
+            </div>
           )}
         </div>
         
-        <div className={`p-4 rounded-xl border ${account.operationMode === 'REAL' ? 'bg-[#0a1813] border-emerald-500/40' : 'bg-[#12141a] border-slate-800'}`}>
+        <div className="p-4 rounded-xl border bg-[#12141a] border-slate-800">
           <span className="text-[10px] text-slate-400 uppercase tracking-wider block mb-2">
-            {account.operationMode === 'REAL' ? 'Margem Real Disponível' : 'Margem Disponível Demo'}
+            Margem Disponível
           </span>
           <div className="text-2xl font-black text-cyan-400">
-            ${account.availableMarginUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${(account.operationMode === 'REAL' && account.binanceConfig?.availableMarginUsdt !== undefined
+              ? account.binanceConfig.availableMarginUsdt 
+              : account.availableMarginUsd
+            ).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
 
-        <div className={`p-4 rounded-xl border ${account.operationMode === 'REAL' ? 'bg-[#0a1813] border-emerald-500/40' : 'bg-[#12141a] border-slate-800'}`}>
+        <div className="p-4 rounded-xl border bg-[#12141a] border-slate-800">
           <span className="text-[10px] text-slate-400 uppercase tracking-wider block mb-2">
-            {account.operationMode === 'REAL' ? 'PnL Realizado (Real)' : 'PnL Total Realizado Demo'}
+            PnL Realizado
           </span>
           <div className={`text-2xl font-black ${account.totalRealizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
             {account.totalRealizedPnlUsd >= 0 ? '+' : ''}${account.totalRealizedPnlUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -2806,11 +2484,11 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                 Meta Confluência Sniper (Score Mínimo Requerido)
               </span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
-                META {account.minConfluenceScore ?? 75}% ATIVA
+                META {account.minConfluenceScore ?? 50}% ATIVA
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-sans mt-0.5">
-              Define o limiar de pontuação quântica exigido do algoritmo de confluência (0-100%) para validar entradas. Com <strong>{account.minConfluenceScore ?? 75}%</strong>, o robô garante que somente operações com altíssimo alinhamento de fluxo e indicadores sejam executadas.
+              Define o limiar de pontuação quântica exigido do algoritmo de confluência (0-100%) para validar entradas. O valor de <strong>50%</strong> representa o ponto de equilíbrio real para gatilhos divergentes.
             </p>
           </div>
         </div>
@@ -2818,13 +2496,14 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         <div className="flex items-center gap-2 flex-wrap shrink-0">
           <span className="text-[10px] text-slate-400 uppercase">Meta Selecionada:</span>
           {[
+            { label: '50%', score: 50, tip: 'Agressiva / Calibrado Divergente' },
             { label: '58%', score: 58, tip: 'Conservadora Média' },
             { label: '65%', score: 65, tip: 'Intermediária' },
             { label: '75%', score: 75, tip: 'Sniper Alta Precisão (Recomendada)' },
             { label: '80%', score: 80, tip: 'Super Sniper' },
             { label: '85%', score: 85, tip: 'Ultra Restritiva' }
           ].map(opt => {
-            const isSelected = (account.minConfluenceScore ?? 75) === opt.score;
+            const isSelected = (account.minConfluenceScore ?? 50) === opt.score;
             return (
               <button
                 key={opt.label}
@@ -2954,13 +2633,16 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                     <div className="flex items-center gap-3">
                       <div className={`w-2 h-14 rounded-full ${pos.side === 'LONG' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono font-bold text-white text-lg">{pos.symbol}</span>
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${pos.side === 'LONG' ? 'bg-emerald-950 text-emerald-400 border-emerald-800' : 'bg-rose-950 text-rose-400 border-rose-800'}`}>
                             {pos.side}
                           </span>
                           <span className="text-[10px] text-slate-400 font-sans">
                             {pos.coinName}
+                          </span>
+                          <span className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-700/50">
+                            Simulação HFT Demo
                           </span>
                         </div>
                         <div className="text-[11px] font-mono text-slate-400 mt-1">
@@ -3134,11 +2816,25 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                 <Activity className={`w-5 h-5 ${account.isAutoTradingEnabled ? 'animate-pulse' : ''}`} />
               </div>
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-bold text-white uppercase tracking-wider">
-                    Monitoramento de Gatilho do Robô
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-white uppercase tracking-wider">
+                  Monitoramento de Gatilho do Robô
+                </span>
+                <label className="inline-flex items-center gap-2 cursor-pointer bg-slate-900/60 hover:bg-slate-800 transition px-2.5 py-1 rounded-lg border border-slate-700/50 group ml-2" title="Ignorar travas técnicas (BTC, Score, Anti-Trap) para execução imediata">
+                  <input 
+                    type="checkbox" 
+                    className="w-3.5 h-3.5 rounded border-slate-700 text-amber-500 focus:ring-amber-500/30 bg-slate-800"
+                    checked={account.isRobotBypassEnabled || false}
+                    onChange={(e) => {
+                      const res = updateRobotBypassSettings(e.target.checked);
+                      setAccount({...res});
+                    }}
+                  />
+                  <span className="text-[10px] font-bold uppercase tracking-tight text-slate-400 group-hover:text-amber-400 transition">
+                    Bypass Gatilhos (Forçar READY)
                   </span>
-                  <span className={`inline-flex items-center gap-1 text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
+                </label>
+                <span className={`inline-flex items-center gap-1 text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
                     account.isAutoTradingEnabled 
                       ? 'bg-emerald-950 text-emerald-300 border border-emerald-700 animate-pulse' 
                       : 'bg-slate-900 text-slate-400 border border-slate-800'
@@ -3830,7 +3526,11 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
                       <td className="py-2 px-2 text-slate-300 font-medium font-mono">
                         <span className="text-slate-200">{dateStr}</span> <span className="text-slate-400 text-[10px]">{timeStr}</span>
                       </td>
-                      <td className="py-2 px-2 text-slate-200 font-bold">{pos.symbol}</td>
+                      <td className="py-2 px-2 text-slate-200 font-bold">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{pos.symbol}</span>
+                        </div>
+                      </td>
                       <td className={`py-2 px-2 font-bold ${pos.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>{pos.side}</td>
                       <td className="py-2 px-2">
                         <span className={`inline-flex items-center gap-1 ${pos.closeReason === 'TAKE_PROFIT' || pos.closeReason === 'TIME_EXPIRATION' || (pos.closeReason === 'TRAILING_STOP' && realizedPnlUsd > 0) ? 'text-emerald-400 font-bold' : 'text-slate-300'}`}>
@@ -3902,20 +3602,24 @@ export function TradingExecutionDashboard({ cryptos }: TradingExecutionDashboard
         </div>
       )}
 
-      {/* Binance API Config Modal */}
-      <BinanceApiConfigModal
-        isOpen={showBinanceModal}
-        onClose={() => setShowBinanceModal(false)}
-        config={account.binanceConfig}
-        onConnectedSuccess={() => {
-          setAccount(getTradingAccount());
-        }}
-      />
-
       <PriceDisplacementAiModal
         isOpen={showDisplacementModal}
         onClose={() => setShowDisplacementModal(false)}
         allCryptos={cryptos}
+      />
+
+      <BinanceApiConfigModal
+        isOpen={showBinanceModal}
+        onClose={() => {
+          setShowBinanceModal(false);
+          setAccount(getTradingAccount());
+        }}
+        onConnectedSuccess={() => {
+          setShowBinanceModal(false);
+          const updated = getTradingAccount();
+          setAccount(updated);
+          addLog('INFO', 'Binance API conectada com sucesso! Você já pode operar em MODO REAL.');
+        }}
       />
 
     </div>

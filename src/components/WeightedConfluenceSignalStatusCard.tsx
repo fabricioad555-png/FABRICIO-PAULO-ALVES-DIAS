@@ -67,7 +67,7 @@ export function WeightedConfluenceSignalStatusCard({
   };
 
   // Extract Layer 1 & 2 score (Holistic Pareto score approx or average of primary and secondary)
-  const layer1And2Score = Math.round((confluenceResult.primaryAnalysis.overallPrimaryScore + (confluenceResult.confluenceScorePct)) / 2);
+  const layer1And2Score = Math.round(((confluenceResult?.primaryAnalysis?.overallPrimaryScore ?? 50) + (confluenceResult?.confluenceScorePct ?? 50)) / 2);
   const technicalScore60 = btcTechnicalScoreSummary.overallScore;
 
   // Master weighted score based on dynamic weights

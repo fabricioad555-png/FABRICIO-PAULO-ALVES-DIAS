@@ -791,7 +791,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
             </div>
 
             <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950 px-2 py-1 rounded border border-emerald-800">
-              Nível: {analysisResult?.riskManagement.riskRating || 'Moderado'}
+              Nível: {analysisResult?.riskManagement?.riskRating || 'Moderado'}
             </span>
           </div>
         </div>
@@ -964,7 +964,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
             <div className="p-3 bg-[#12141a] border border-slate-800 rounded-xl flex flex-col justify-between">
               <span className="text-[10px] uppercase text-slate-400 block">Regra de Invalidação IA:</span>
               <p className="text-[10px] text-slate-300 font-sans mt-1 leading-tight line-clamp-2">
-                {analysisResult?.riskManagement.invalidationRule ||
+                {analysisResult?.riskManagement?.invalidationRule ||
                   'Cancelar se fechar candle de 1h abaixo do stop loss determinado.'}
               </p>
               <span className="text-[9px] text-slate-500 mt-1 block">
@@ -1336,7 +1336,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                 </h3>
               </div>
               <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-800">
-                Score Momento: {analysisResult?.momentum.score || 88}/100
+                Score Momento: {analysisResult?.momentum?.score || 88}/100
               </span>
             </div>
 
@@ -1344,7 +1344,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
               <div className="p-3 bg-[#12141a] border border-slate-800/80 rounded-lg">
                 <span className="text-[10px] uppercase text-slate-400 block mb-0.5">Fase Atual do Mercado:</span>
                 <span className="text-indigo-300 font-bold block text-sm">
-                  {analysisResult?.momentum.phase || 'Compressão de Volatilidade & Absorção'}
+                  {analysisResult?.momentum?.phase || 'Compressão de Volatilidade & Absorção'}
                 </span>
               </div>
 
@@ -1352,13 +1352,13 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                 <span className="text-[10px] uppercase text-slate-400 block mb-0.5">Força Dominante:</span>
                 <span className="text-emerald-400 font-bold block text-sm flex items-center gap-1">
                   <TrendingUp className="h-4 w-4" />
-                  {analysisResult?.momentum.dominantForce || 'Compradora Agressiva'}
+                  {analysisResult?.momentum?.dominantForce || 'Compradora Agressiva'}
                 </span>
               </div>
             </div>
 
             <p className="text-xs font-sans text-slate-300 leading-relaxed bg-[#12141a] p-3 rounded-lg border border-slate-800/60">
-              {analysisResult?.momentum.indicatorSummary ||
+              {analysisResult?.momentum?.indicatorSummary ||
                 `Para $${activeCrypto.symbol}, os indicadores selecionados (${activeIndicatorIds.length} ativos) convergem para continuidade do impulso de alta. O ponto de pivô e o volume de acumulação de baleias sugerem reteste em breve.`}
             </p>
           </div>
@@ -1379,7 +1379,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                   <span className="flex items-center gap-1">
                     <CheckCircle2 className="h-3.5 w-3.5" /> Pool de Liquidez Comprador (Buy Wall):
                   </span>
-                  <span>{analysisResult?.spotLiquidity.buyLiquidityPool || `US$ ${(activeCrypto.priceUsd * 0.98).toFixed(2)} - US$ ${(activeCrypto.priceUsd * 0.99).toFixed(2)}`}</span>
+                  <span>{analysisResult?.spotLiquidity?.buyLiquidityPool || `US$ ${(activeCrypto.priceUsd * 0.98).toFixed(2)} - US$ ${(activeCrypto.priceUsd * 0.99).toFixed(2)}`}</span>
                 </div>
                 <p className="text-[11px] text-slate-300 font-sans">
                   Concentração massiva de ordens limites de compra prontas para absorver eventuais liquidações rápidas.
@@ -1392,7 +1392,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                   <span className="flex items-center gap-1">
                     <ShieldCheck className="h-3.5 w-3.5" /> Pool de Liquidez Vendedor (Ask Wall):
                   </span>
-                  <span>{analysisResult?.spotLiquidity.sellLiquidityPool || `US$ ${(activeCrypto.priceUsd * 1.05).toFixed(2)} - US$ ${(activeCrypto.priceUsd * 1.08).toFixed(2)}`}</span>
+                  <span>{analysisResult?.spotLiquidity?.sellLiquidityPool || `US$ ${(activeCrypto.priceUsd * 1.05).toFixed(2)} - US$ ${(activeCrypto.priceUsd * 1.08).toFixed(2)}`}</span>
                 </div>
                 <p className="text-[11px] text-slate-300 font-sans">
                   Resistência chave com grandes blocos de venda posicionados pelos formadores de mercado.
@@ -1405,7 +1405,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                   <span className="flex items-center gap-1">
                     <AlertTriangle className="h-3.5 w-3.5" /> Zona de Caça a Stops & Liquidação:
                   </span>
-                  <span>{analysisResult?.spotLiquidity.stopHuntZone || `Acima dos US$ ${(activeCrypto.priceUsd * 1.09).toFixed(2)}`}</span>
+                  <span>{analysisResult?.spotLiquidity?.stopHuntZone || `Acima dos US$ ${(activeCrypto.priceUsd * 1.09).toFixed(2)}`}</span>
                 </div>
                 <p className="text-[11px] text-slate-300 font-sans">
                   Região onde o rompimento ativará liquidações em cadeia de posições vendidas, alimentando alta rápida.
@@ -1429,7 +1429,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                 </h3>
               </div>
               <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800">
-                Delta: {analysisResult?.orderBookFlow.aggressiveDeltaFlow || '+64% Comprador'}
+                Delta: {analysisResult?.orderBookFlow?.aggressiveDeltaFlow || '+64% Comprador'}
               </span>
             </div>
 
@@ -1437,14 +1437,14 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
               <div className="p-2.5 bg-[#12141a] rounded-lg border border-slate-800/80 space-y-1">
                 <span className="text-[10px] text-slate-400 uppercase block">Maior Muralha de Compra (Bid):</span>
                 <span className="text-emerald-400 font-bold text-xs block">
-                  {analysisResult?.orderBookFlow.keySupportWall || `US$ ${(activeCrypto.priceUsd * 0.982).toFixed(2)} (Muro de Suporte Forte)`}
+                  {analysisResult?.orderBookFlow?.keySupportWall || `US$ ${(activeCrypto.priceUsd * 0.982).toFixed(2)} (Muro de Suporte Forte)`}
                 </span>
               </div>
 
               <div className="p-2.5 bg-[#12141a] rounded-lg border border-slate-800/80 space-y-1">
                 <span className="text-[10px] text-slate-400 uppercase block">Maior Muralha de Venda (Ask):</span>
                 <span className="text-rose-400 font-bold text-xs block">
-                  {analysisResult?.orderBookFlow.keyResistanceWall || `US$ ${(activeCrypto.priceUsd * 1.045).toFixed(2)} (Muro de Resistência)`}
+                  {analysisResult?.orderBookFlow?.keyResistanceWall || `US$ ${(activeCrypto.priceUsd * 1.045).toFixed(2)} (Muro de Resistência)`}
                 </span>
               </div>
 
@@ -1459,7 +1459,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                   <div className="h-full bg-rose-500 w-[35%]" />
                 </div>
                 <span className="text-[10px] text-slate-400 block text-right">
-                  Sinal T&T: {analysisResult?.orderBookFlow.timesAndTradesSignal || 'Agressão constante a mercado'}
+                  Sinal T&T: {analysisResult?.orderBookFlow?.timesAndTradesSignal || 'Agressão constante a mercado'}
                 </span>
               </div>
             </div>
@@ -1475,7 +1475,7 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
                 </h3>
               </div>
               <span className="text-xs font-mono font-bold bg-emerald-500/20 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/40 uppercase">
-                {analysisResult?.entrySignal.action || 'COMPRA (LONG)'}
+                {analysisResult?.entrySignal?.action || 'COMPRA (LONG)'}
               </span>
             </div>
 
@@ -1483,28 +1483,28 @@ const IndividualTechnicalAnalysisBlockComponent: React.FC<IndividualTechnicalAna
               <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Entrada Ideal:</span>
                 <span className="text-emerald-400 font-bold text-xs">
-                  {analysisResult?.entrySignal.entryZone || `US$ ${(activeCrypto.priceUsd * 0.995).toFixed(2)} - ${(activeCrypto.priceUsd * 1.002).toFixed(2)}`}
+                  {analysisResult?.entrySignal?.entryZone || `US$ ${(activeCrypto.priceUsd * 0.995).toFixed(2)} - ${(activeCrypto.priceUsd * 1.002).toFixed(2)}`}
                 </span>
               </div>
 
               <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Stop Loss:</span>
                 <span className="text-rose-400 font-bold text-xs">
-                  {analysisResult?.entrySignal.stopLoss || `US$ ${(activeCrypto.priceUsd * 0.965).toFixed(2)}`}
+                  {analysisResult?.entrySignal?.stopLoss || `US$ ${(activeCrypto.priceUsd * 0.965).toFixed(2)}`}
                 </span>
               </div>
 
               <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Take Profit 1:</span>
                 <span className="text-indigo-300 font-bold text-xs">
-                  {analysisResult?.entrySignal.takeProfit1 || `US$ ${(activeCrypto.priceUsd * 1.06).toFixed(2)}`}
+                  {analysisResult?.entrySignal?.takeProfit1 || `US$ ${(activeCrypto.priceUsd * 1.06).toFixed(2)}`}
                 </span>
               </div>
 
               <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 block">Relação Risco x Retorno:</span>
                 <span className="text-amber-300 font-bold text-xs">
-                  {analysisResult?.entrySignal.riskRewardRatio || '1 : 3.4'}
+                  {analysisResult?.entrySignal?.riskRewardRatio || '1 : 3.4'}
                 </span>
               </div>
             </div>

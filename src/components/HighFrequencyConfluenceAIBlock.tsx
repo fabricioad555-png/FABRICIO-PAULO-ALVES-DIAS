@@ -167,7 +167,7 @@ export function HighFrequencyConfluenceAIBlock({
   const [activeSubTab, setActiveSubTab] = useState<'cockpit' | 'tech_indicators' | 'pareto_summary' | 'layer1_primary' | 'layer2_secondary' | 'thesis'>('cockpit');
   const [executionFeedback, setExecutionFeedback] = useState<{ message: string; isSuccess: boolean } | null>(null);
 
-  const layer1And2Score = Math.round((confluenceResult.primaryAnalysis.overallPrimaryScore + confluenceResult.confluenceScorePct) / 2);
+  const layer1And2Score = Math.round(((confluenceResult?.primaryAnalysis?.overallPrimaryScore ?? 50) + (confluenceResult?.confluenceScorePct ?? 50)) / 2);
   // ----------------------------------------------------------------------------------
   // 10-MINUTE CYCLE: TOP 3 CRYPTOS WITH HIGHEST PROFIT PROBABILITY (PARETO CRITICALITY)
   // ----------------------------------------------------------------------------------
@@ -816,7 +816,7 @@ export function HighFrequencyConfluenceAIBlock({
           }`}
         >
           <BarChart2 className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Camada 1: 4 Pilares Ponderados ({confluenceResult.primaryAnalysis.overallPrimaryScore}/100)</span>
+          <span>Camada 1: 4 Pilares Ponderados ({confluenceResult?.primaryAnalysis?.overallPrimaryScore ?? 50}/100)</span>
         </button>
 
         <button
@@ -1082,14 +1082,14 @@ export function HighFrequencyConfluenceAIBlock({
                 <span className="font-bold text-white text-xs">Análise Primária Multifatorial (Ponderação Global)</span>
               </div>
               <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                confluenceResult.primaryAnalysis.primarySignal === 'COMPRA' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-rose-950 text-rose-300 border border-rose-800'
+                confluenceResult?.primaryAnalysis?.primarySignal === 'COMPRA' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-rose-950 text-rose-300 border border-rose-800'
               }`}>
-                Sinal Primário: {confluenceResult.primaryAnalysis.primarySignal}
+                Sinal Primário: {confluenceResult?.primaryAnalysis?.primarySignal}
               </span>
             </div>
 
             <div className="space-y-2">
-              {(Object.values(confluenceResult.primaryAnalysis.pillars) as Layer1PrimaryPillar[]).map((p, idx) => (
+              {(Object.values(confluenceResult?.primaryAnalysis?.pillars) as Layer1PrimaryPillar[]).map((p, idx) => (
                 <div key={idx} className="p-2.5 bg-[#0a0a0b] rounded-lg border border-slate-800/80 space-y-1">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-slate-300 font-bold">{p.name} (Peso {p.weightPct}%)</span>
@@ -1107,7 +1107,7 @@ export function HighFrequencyConfluenceAIBlock({
 
             <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-cyan-500/20 text-[11px] font-sans text-slate-300">
               <strong className="text-cyan-400 font-mono block">Score Ponderado Camada 1:</strong>
-              {confluenceResult.primaryAnalysis.summary}
+              {confluenceResult?.primaryAnalysis?.summary}
             </div>
           </div>
 
@@ -1119,7 +1119,7 @@ export function HighFrequencyConfluenceAIBlock({
                 <span className="font-bold text-white text-xs">Análise Secundária: Book 100 & Tape Reading</span>
               </div>
               <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800">
-                {confluenceResult.secondaryValidation.secondaryConfirmationSignal}
+                {confluenceResult?.secondaryValidation?.secondaryConfirmationSignal}
               </span>
             </div>
 
@@ -1130,14 +1130,14 @@ export function HighFrequencyConfluenceAIBlock({
                   <span className="text-cyan-300 font-bold flex items-center gap-1">
                     <Layers className="w-3.5 h-3.5 text-cyan-400" /> Book Visual (100 Níveis):
                   </span>
-                  <span className="text-slate-300 font-bold">{confluenceResult.secondaryValidation.visualBookAnalysis.imbalanceRatio}</span>
+                  <span className="text-slate-300 font-bold">{confluenceResult?.secondaryValidation?.visualBookAnalysis.imbalanceRatio}</span>
                 </div>
                 <p className="text-[11px] font-sans text-slate-300 leading-snug">
-                  {confluenceResult.secondaryValidation.visualBookAnalysis.insight}
+                  {confluenceResult?.secondaryValidation?.visualBookAnalysis.insight}
                 </p>
                 <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
-                  <span>Muralha Bid: US$ {confluenceResult.secondaryValidation.visualBookAnalysis.bidWallPrice}</span>
-                  <span>Muralha Ask: US$ {confluenceResult.secondaryValidation.visualBookAnalysis.askWallPrice}</span>
+                  <span>Muralha Bid: US$ {confluenceResult?.secondaryValidation?.visualBookAnalysis.bidWallPrice}</span>
+                  <span>Muralha Ask: US$ {confluenceResult?.secondaryValidation?.visualBookAnalysis.askWallPrice}</span>
                 </div>
               </div>
 
@@ -1147,21 +1147,21 @@ export function HighFrequencyConfluenceAIBlock({
                   <span className="text-emerald-300 font-bold flex items-center gap-1">
                     <Activity className="w-3.5 h-3.5 text-emerald-400" /> Rastreador Times & Trades:
                   </span>
-                  <span className="text-emerald-400 font-bold">{confluenceResult.secondaryValidation.tapeReadingTracker.aggressionDominance}</span>
+                  <span className="text-emerald-400 font-bold">{confluenceResult?.secondaryValidation?.tapeReadingTracker.aggressionDominance}</span>
                 </div>
                 <p className="text-[11px] font-sans text-slate-300 leading-snug">
-                  {confluenceResult.secondaryValidation.tapeReadingTracker.insight}
+                  {confluenceResult?.secondaryValidation?.tapeReadingTracker.insight}
                 </p>
                 <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
-                  <span>Velocidade: {confluenceResult.secondaryValidation.tapeReadingTracker.averageTickSpeed}</span>
-                  <span>CVD: US$ {(confluenceResult.secondaryValidation.tapeReadingTracker.cumulativeDeltaVolumeUsd / 1000).toFixed(1)}k</span>
+                  <span>Velocidade: {confluenceResult?.secondaryValidation?.tapeReadingTracker.averageTickSpeed}</span>
+                  <span>CVD: US$ {(confluenceResult?.secondaryValidation?.tapeReadingTracker.cumulativeDeltaVolumeUsd / 1000).toFixed(1)}k</span>
                 </div>
               </div>
             </div>
 
             <div className="p-2.5 bg-[#0a0a0b] rounded-lg border border-emerald-500/20 text-[11px] font-sans text-slate-300">
               <strong className="text-emerald-400 font-mono block">Validação Camada 2:</strong>
-              Confirmação dupla validada com {confluenceResult.secondaryValidation.secondaryConfidence}% de precisão na fita.
+              Confirmação dupla validada com {confluenceResult?.secondaryValidation?.secondaryConfidence}% de precisão na fita.
             </div>
           </div>
 
@@ -1172,7 +1172,7 @@ export function HighFrequencyConfluenceAIBlock({
       {activeSubTab === 'layer1_primary' && (
         <div className="space-y-4 font-mono text-xs">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {(Object.values(confluenceResult.primaryAnalysis.pillars) as Layer1PrimaryPillar[]).map((p, idx) => (
+            {(Object.values(confluenceResult?.primaryAnalysis?.pillars) as Layer1PrimaryPillar[]).map((p, idx) => (
               <div key={idx} className="p-4 bg-[#12141a] rounded-xl border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                   <span className="font-bold text-white text-xs">{p.name}</span>
@@ -1209,24 +1209,24 @@ export function HighFrequencyConfluenceAIBlock({
                   <Layers className="w-4 h-4 text-cyan-400" /> Book Visual de 100 Níveis
                 </span>
                 <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-bold text-[10.5px]">
-                  {confluenceResult.secondaryValidation.visualBookAnalysis.status}
+                  {confluenceResult?.secondaryValidation?.visualBookAnalysis.status}
                 </span>
               </div>
               <p className="text-xs font-sans text-slate-300 leading-relaxed">
-                {confluenceResult.secondaryValidation.visualBookAnalysis.insight}
+                {confluenceResult?.secondaryValidation?.visualBookAnalysis.insight}
               </p>
               <div className="space-y-1 bg-[#0a0a0b] p-3 rounded-lg border border-slate-800 text-[11px]">
                 <div className="flex justify-between">
                   <span className="text-slate-400">Desbalanço de Livro:</span>
-                  <span className="text-white font-bold">{confluenceResult.secondaryValidation.visualBookAnalysis.imbalanceRatio}</span>
+                  <span className="text-white font-bold">{confluenceResult?.secondaryValidation?.visualBookAnalysis.imbalanceRatio}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Vácuo de Liquidez:</span>
-                  <span className="text-amber-300 font-bold">{confluenceResult.secondaryValidation.visualBookAnalysis.vacuumSide}</span>
+                  <span className="text-amber-300 font-bold">{confluenceResult?.secondaryValidation?.visualBookAnalysis.vacuumSide}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Score de Validação do Book:</span>
-                  <span className="text-emerald-400 font-bold">{confluenceResult.secondaryValidation.visualBookAnalysis.validationScore}/100</span>
+                  <span className="text-emerald-400 font-bold">{confluenceResult?.secondaryValidation?.visualBookAnalysis.validationScore}/100</span>
                 </div>
               </div>
             </div>
@@ -1237,24 +1237,24 @@ export function HighFrequencyConfluenceAIBlock({
                   <Activity className="w-4 h-4 text-emerald-400" /> Rastreador IA do Times & Trades
                 </span>
                 <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-bold text-[10.5px]">
-                  {confluenceResult.secondaryValidation.tapeReadingTracker.priceDisplacementStatus}
+                  {confluenceResult?.secondaryValidation?.tapeReadingTracker.priceDisplacementStatus}
                 </span>
               </div>
               <p className="text-xs font-sans text-slate-300 leading-relaxed">
-                {confluenceResult.secondaryValidation.tapeReadingTracker.insight}
+                {confluenceResult?.secondaryValidation?.tapeReadingTracker.insight}
               </p>
               <div className="space-y-1 bg-[#0a0a0b] p-3 rounded-lg border border-slate-800 text-[11px]">
                 <div className="flex justify-between">
                   <span className="text-slate-400">Agressão Dominante:</span>
-                  <span className="text-emerald-400 font-bold">{confluenceResult.secondaryValidation.tapeReadingTracker.aggressionDominance}</span>
+                  <span className="text-emerald-400 font-bold">{confluenceResult?.secondaryValidation?.tapeReadingTracker.aggressionDominance}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Delta de Volume Cumulativo:</span>
-                  <span className="text-white font-bold">US$ {(confluenceResult.secondaryValidation.tapeReadingTracker.cumulativeDeltaVolumeUsd / 1000).toFixed(1)}k</span>
+                  <span className="text-white font-bold">US$ {(confluenceResult?.secondaryValidation?.tapeReadingTracker.cumulativeDeltaVolumeUsd / 1000).toFixed(1)}k</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Velocidade da Fita:</span>
-                  <span className="text-cyan-300 font-bold">{confluenceResult.secondaryValidation.tapeReadingTracker.averageTickSpeed}</span>
+                  <span className="text-cyan-300 font-bold">{confluenceResult?.secondaryValidation?.tapeReadingTracker.averageTickSpeed}</span>
                 </div>
               </div>
             </div>
