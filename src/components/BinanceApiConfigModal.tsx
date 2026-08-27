@@ -46,11 +46,13 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
       const result = await doubleCheckBinanceConnection(apiKey, apiSecret, isTestnet, accountType);
 
       if (result.success) {
+        // Cada check reflete o mercado que respondeu de verdade. Marcar os dois
+        // como passados quando só um respondeu esconde metade do resultado.
         setTestResult({
           success: true,
           message: result.message,
-          check1: true,
-          check2: true,
+          check1: Boolean(result.permissions?.includes('SPOT')),
+          check2: Boolean(result.permissions?.includes('FUTURES')),
           futuresBalance: result.futuresBalance,
           spotBalance: result.spotBalance
         });
@@ -270,19 +272,30 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
                 <span>{testResult.message}</span>
               </div>
               
+              {/* Só mostrar os checks quando um teste realmente correu. Uma
+                  mensagem de validação, como "preencha as chaves", não testa
+                  nada, e antes marcava os dois como FALHOU sem motivo. */}
               <div className="pt-2 border-t border-slate-800 space-y-1.5 text-[11px] font-mono">
-                <div className="flex justify-between items-center">
-                  <span>CHECK 1: Conexão Spot Geral (Sincronização de Relógio)</span>
-                  <span className={`px-2 py-0.5 rounded font-extrabold ${testResult.check1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                    {testResult.check1 ? 'PASSOU ✔' : 'FALHOU ✖'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span>CHECK 2: Segmento Futuros USD-M & Verificação de Margem</span>
-                  <span className={`px-2 py-0.5 rounded font-extrabold ${testResult.check2 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                    {testResult.check2 ? 'PASSOU ✔' : 'FALHOU ✖'}
-                  </span>
-                </div>
+                {testResult.check1 === undefined && testResult.check2 === undefined ? (
+                  <div className="text-slate-400">
+                    Nenhum teste executado ainda. Use <strong>Testar &amp; Duplo Check</strong>.
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between items-center">
+                      <span>CHECK 1: Conexão Spot Geral (Sincronização de Relógio)</span>
+                      <span className={`px-2 py-0.5 rounded font-extrabold ${testResult.check1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                        {testResult.check1 ? 'PASSOU ✔' : 'FALHOU ✖'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span>CHECK 2: Segmento Futuros USD-M &amp; Verificação de Margem</span>
+                      <span className={`px-2 py-0.5 rounded font-extrabold ${testResult.check2 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                        {testResult.check2 ? 'PASSOU ✔' : 'FALHOU ✖'}
+                      </span>
+                    </div>
+                  </>
+                )}
                 {testResult.success && (
                   <div className="pt-2 flex justify-between items-center text-white border-t border-dashed border-slate-800">
                     <span>SALDO DE FUTUROS DETECTADO (USDT):</span>
