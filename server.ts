@@ -14,6 +14,8 @@ import {
   registarLigacao,
   registarOrdem
 } from "./auditoria.mjs";
+// @ts-ignore - modulo em JavaScript simples, sem tipos
+import { sessaoAtiva, guardarEstado, lerEstado } from "./sessao.mjs";
 
 dotenv.config();
 
@@ -101,6 +103,31 @@ app.use((req, res, next) => {
 // Leitura da auditoria. Na Vercel existe tambem como funcao em api/auditoria.ts,
 // que ganha por ser resolvida no sistema de ficheiros antes dos rewrites. Sem
 // esta rota, o pedido caia no catch-all e o painel recebia HTML em vez de JSON.
+// Estado da sessao: permite abrir o terminal noutro computador com tudo no
+// lugar. O conteudo vai cifrado com chave derivada do codigo de acesso, que
+// nunca e guardado. Sem isso, publicar o estado num endereco publico seria
+// publicar a chave da Binance junto.
+app.post("/api/sessao/guardar", async (req, res) => {
+  if (!sessaoAtiva()) {
+    return res.status(503).json({ ok: false, erro: "Armazenamento de sessao desligado no servidor." });
+  }
+  const { codigo, estado } = req.body || {};
+  if (!estado || typeof estado !== "object") {
+    return res.status(400).json({ ok: false, erro: "Estado ausente." });
+  }
+  const r = await guardarEstado(codigo, estado);
+  return res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.post("/api/sessao/ler", async (req, res) => {
+  if (!sessaoAtiva()) {
+    return res.status(503).json({ ok: false, erro: "Armazenamento de sessao desligado no servidor." });
+  }
+  const { codigo } = req.body || {};
+  const r = await lerEstado(codigo);
+  return res.status(r.ok ? 200 : 400).json(r);
+});
+
 app.get("/api/auditoria", async (req, res) => {
   if (!auditoriaAtiva()) {
     return res.json({

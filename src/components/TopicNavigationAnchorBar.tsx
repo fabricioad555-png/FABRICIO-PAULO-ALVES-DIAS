@@ -8,6 +8,7 @@ import {
   Grid, 
   ShieldCheck,
   KeyRound,
+  Cloud,
   ChevronDown, 
   ChevronUp, 
   ChevronLeft, 
@@ -51,6 +52,17 @@ export const TOPIC_SECTIONS: TopicItem[] = [
     borderActiveColor: 'border-indigo-500/70',
     bgActiveColor: 'bg-indigo-500/15 text-indigo-200',
     description: 'Auditoria de integridade lógica, veracidade e otimização autônoma de performance'
+  },
+  {
+    id: 'section-sessao',
+    label: 'Sessão Sincronizada',
+    shortLabel: 'Sessão',
+    badge: 'Multi-PC',
+    icon: Cloud,
+    accentColor: 'text-violet-400',
+    borderActiveColor: 'border-violet-500/70',
+    bgActiveColor: 'bg-violet-500/15 text-violet-200',
+    description: 'Abra o terminal em outro computador com chaves, posições e gatilhos no lugar'
   },
   {
     id: 'section-auditoria-bd',

@@ -12,6 +12,7 @@ import { HighFrequencyConfluenceAIBlock } from './components/HighFrequencyConflu
 import { TradingExecutionDashboard } from './components/TradingExecutionDashboard';
 import { BinanceApiConfigSection } from './components/BinanceApiConfigSection';
 import { AuditoriaPersistentePanel } from './components/AuditoriaPersistentePanel';
+import { SessaoSincronizadaSection } from './components/SessaoSincronizadaSection';
 import { OnChainHistoryAnalysisBlock } from './components/OnChainHistoryAnalysisBlock';
 import { SentimentHeatmap } from './components/SentimentHeatmap';
 import { SystemAuditModule } from './components/SystemAuditModule';
@@ -202,6 +203,17 @@ export default function App() {
               cryptos={cryptos}
               forumPosts={forumPosts}
             />
+          </ErrorBoundary>
+        </section>
+
+        {/* Sessao sincronizada entre computadores */}
+        <section
+          id="section-sessao"
+          className="scroll-mt-36 transition-all"
+          aria-label="Sessão Sincronizada"
+        >
+          <ErrorBoundary fallbackTitle="Sessão Sincronizada">
+            <SessaoSincronizadaSection />
           </ErrorBoundary>
         </section>
 
