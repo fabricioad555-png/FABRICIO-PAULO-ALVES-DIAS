@@ -8,20 +8,36 @@ No ar: https://fabricio-paulo-alves-dias.vercel.app
 
 ## Como rodar
 
+Duplo clique num destes, na pasta do projeto:
+
+| Arquivo | O que faz |
+|---|---|
+| `iniciar.bat` | Sobe o terminal só nesta máquina e na rede de casa |
+| `iniciar-com-link.bat` | Sobe e ainda cria um link público para acessar de fora |
+
+Ou pela linha de comando:
+
 ```bash
 npm install
-npm run dev
-```
-
-Sobe em `http://localhost:3000`. O `server.ts` serve a API e, em
-desenvolvimento, monta o Vite como middleware, então é um processo só.
-
-Para produção:
-
-```bash
 npm run build
 npm start
 ```
+
+Sobe em `http://localhost:3000`. Para desenvolver com recarga automática,
+`npm run dev`.
+
+### Por que rodar em casa e não só na nuvem
+
+A chave da Binance tem permissão de Futuros, e a Binance **obriga trava de IP
+em chave com Futuros**. Não existe a combinação "Futuros ligado + IP
+irrestrito": ao ativar Futuros, a restrição de IP volta sozinha.
+
+Como o IP autorizado é o da casa, os pedidos precisam sair daqui. O
+`iniciar-com-link.bat` resolve isso com um túnel: o link é público e abre de
+qualquer lugar, mas quem fala com a Binance continua sendo esta máquina.
+
+A versão na Vercel serve o painel, as cotações e as análises de IA de qualquer
+lugar. O modo real de operar é que precisa do túnel ou do acesso local.
 
 ## Variáveis de ambiente
 
