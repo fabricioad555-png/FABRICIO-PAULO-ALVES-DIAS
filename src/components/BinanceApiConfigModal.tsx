@@ -70,7 +70,11 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
           permissions: result.permissions,
           futuresDetails: result.futuresDetails
         };
-        currentAccount.demoBalanceUsd = accountType === 'FUTURES' ? (result.futuresBalance || 1000) : (result.spotBalance || 1000);
+        // Saldo zero é saldo zero. Com "|| 1000" uma conta vazia aparecia
+        // com 1000 USDT, porque zero é falso em JavaScript.
+        currentAccount.demoBalanceUsd = accountType === 'FUTURES'
+          ? (result.futuresBalance ?? 0)
+          : (result.spotBalance ?? 0);
         currentAccount.operationMode = 'REAL';
         currentAccount.activeBroker = 'BINANCE';
 
@@ -95,28 +99,48 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
 
   const handleSaveAndActivate = () => {
     if (!apiKey.trim() || !apiSecret.trim()) {
-      alert('Por favor, configure as chaves API primeiro.');
+      setTestResult({ success: false, message: 'Preencha a API Key e o API Secret antes de ativar.' });
+      return;
+    }
+
+    // Só ativa o Modo Real depois de a Binance ter confirmado a ligação.
+    // Antes bastava ter as chaves preenchidas e o saldo caía num valor
+    // fixo de 10000, o que dava a conta por ligada sem nunca a validar.
+    if (!testResult?.success) {
+      setTestResult({
+        success: false,
+        message: 'Teste a ligação primeiro. O Modo Real só é ativado com a confirmação da Binance.'
+      });
+      return;
+    }
+
+    const saldo = accountType === 'FUTURES' ? testResult.futuresBalance : testResult.spotBalance;
+
+    if (saldo === undefined) {
+      setTestResult({
+        success: false,
+        message: `A Binance não devolveu saldo de ${accountType} para esta chave. Verifique as permissões do mercado escolhido.`
+      });
       return;
     }
 
     const currentAccount = getTradingAccount();
-    const existingBalance = currentAccount.binanceConfig?.accountBalanceUsdt || 10000;
-    const finalBalance = testResult?.futuresBalance !== undefined ? testResult.futuresBalance : existingBalance;
-
     currentAccount.binanceConfig = {
       apiKey,
       apiSecret,
       environment,
       accountType,
       isConnected: true,
-      isVerified: testResult?.success || true,
-      accountBalanceUsdt: finalBalance,
-      availableMarginUsdt: finalBalance,
-      futuresDetails: {
-        totalWalletBalance: finalBalance,
-        availableBalance: finalBalance,
-        totalMarginBalance: finalBalance
-      }
+      isVerified: true,
+      accountBalanceUsdt: saldo,
+      availableMarginUsdt: saldo,
+      futuresDetails: accountType === 'FUTURES'
+        ? {
+            totalWalletBalance: saldo,
+            availableBalance: saldo,
+            totalMarginBalance: saldo
+          }
+        : undefined
     };
     currentAccount.operationMode = 'REAL';
     currentAccount.activeBroker = 'BINANCE';
@@ -167,12 +191,20 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
           </button>
         </div>
 
-        {/* IP Highlight Warning */}
+        {/* Como a ligação sai daqui, e o que isso exige do lado da Binance */}
         <div className="mx-6 mt-5 p-4 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex gap-3">
-          <Globe className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5 animate-pulse" />
-          <div className="text-xs font-sans text-indigo-200">
-            <span className="font-extrabold text-white">📡 Roteamento via IP Local Ativo:</span> Seu navegador enviará ordens diretamente da sua máquina com o IP brasileiro <strong className="text-yellow-400 underline decoration-indigo-400">187.109.130.232</strong>. 
-            Isso elimina o geobloqueio dos EUA e permite usar chaves com restrição de IP de forma nativa e segura!
+          <Globe className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
+          <div className="text-xs font-sans text-indigo-200 space-y-1.5">
+            <p>
+              <span className="font-extrabold text-white">Ligação pelo servidor da aplicação.</span>{' '}
+              A Binance não permite chamadas assinadas a partir do navegador, por isso os pedidos
+              saem do servidor, alojado na Europa.
+            </p>
+            <p className="text-indigo-300/90">
+              Se a sua chave tiver <strong className="text-yellow-400">restrição de IP</strong>, ela vai
+              ser recusada com o erro <strong>-2015</strong>, porque o IP do servidor não é o seu.
+              Nesse caso, desative a restrição de IP na Binance ou use uma chave sem ela.
+            </p>
           </div>
         </div>
 

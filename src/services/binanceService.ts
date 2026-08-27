@@ -1,6 +1,23 @@
-import { BinanceApiConfig } from '../types/tradingTypes';
+// Serviço de ligação à Binance.
+//
+// As funções e os formatos de retorno são os mesmos de antes, mas o caminho
+// mudou: as chamadas passam pelo proxy do próprio servidor em /api/binance/*
+// em vez de irem do navegador direto para a Binance.
+//
+// Motivo: a Binance não devolve cabeçalhos de CORS nos endpoints assinados.
+// O navegador consegue chamar /api/v3/ping, que é público, mas /api/v3/account
+// e /api/v3/order morrem em "Failed to fetch" antes de sair da página. Foi
+// confirmado com um navegador real contra a página publicada.
+//
+// Efeito colateral bom: a chave secreta deixa de ser usada para assinar dentro
+// do JavaScript da página.
 
-// Native HMAC-SHA256 signing using browser SubtleCrypto API
+/**
+ * Assinatura HMAC-SHA256 no navegador.
+ *
+ * Continua exportada por compatibilidade, mas já não é usada pelo fluxo normal:
+ * quem assina agora é o servidor, que é onde a chave secreta deve viver.
+ */
 export async function signRequest(secret: string, queryString: string): Promise<string> {
   try {
     const enc = new TextEncoder();
@@ -38,118 +55,110 @@ interface BinanceTestResult {
   };
 }
 
+const TEMPO_LIMITE_MS = 30000;
+
+async function chamarProxy(caminho: string, corpo: any) {
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), TEMPO_LIMITE_MS);
+
+  try {
+    const resposta = await fetch(caminho, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(corpo),
+      signal: controlador.signal
+    });
+
+    const texto = await resposta.text();
+    let dados: any;
+    try {
+      dados = texto ? JSON.parse(texto) : {};
+    } catch {
+      // Resposta ilegível não é ligação estabelecida.
+      return {
+        success: false,
+        message: `Resposta inválida do servidor (HTTP ${resposta.status}).`
+      };
+    }
+    return dados;
+  } catch (erro: any) {
+    return {
+      success: false,
+      message: erro?.name === 'AbortError'
+        ? 'Tempo limite excedido ao contactar a Binance através do servidor.'
+        : (erro?.message || 'Falha de rede ao contactar o servidor.')
+    };
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
 /**
- * Performs a highly secure browser-direct API test ("Duplo Check") using the user's local IP.
- * Bypasses US-based cloud servers directly through client-side fetches.
+ * Duplo check da ligação: confirma Spot e Futuros na Binance.
+ *
+ * Só devolve sucesso quando a corretora responde. Nenhum saldo é inventado:
+ * o que aparece é o que a Binance mandou.
  */
 export async function doubleCheckBinanceConnection(
   apiKey: string,
   apiSecret: string,
   isTestnet: boolean = false
 ): Promise<BinanceTestResult> {
-  const startTime = Date.now();
-  
-  // Choose correct base URLs for direct local connection
-  const spotBase = isTestnet 
-    ? 'https://testnet.binance.vision' 
-    : 'https://api.binance.com';
-    
-  const futuresBase = isTestnet 
-    ? 'https://testnet.binancefuture.com' 
-    : 'https://fapi.binance.com';
+  const inicio = Date.now();
+  const environment = isTestnet ? 'testnet' : 'binance_pt';
 
-  try {
-    // -------------------------------------------------------------
-    // CHECK 1: SPOT GENERAL CONNECTIVITY & TIMING (Check 1 of Dual Check)
-    // -------------------------------------------------------------
-    const spotTimeStart = Date.now();
-    const serverTimeRes = await fetch(`${spotBase}/api/v3/time`);
-    if (!serverTimeRes.ok) {
-      throw new Error(`Servidor Spot indisponível (HTTP ${serverTimeRes.status})`);
-    }
-    const serverTimeData = await serverTimeRes.json();
-    const serverTime = serverTimeData.serverTime;
-    const pingMs = Date.now() - spotTimeStart;
+  const [spot, futuros] = await Promise.all([
+    chamarProxy('/api/binance/test-connection', {
+      apiKey, apiSecret, environment, accountType: 'SPOT'
+    }),
+    chamarProxy('/api/binance/test-connection', {
+      apiKey, apiSecret, environment, accountType: 'FUTURES'
+    })
+  ]);
 
-    // Build signed query for Spot Account test
-    const spotQueryString = `timestamp=${serverTime}&recvWindow=10000`;
-    const spotSignature = await signRequest(apiSecret, spotQueryString);
-    
-    const spotAccRes = await fetch(`${spotBase}/api/v3/account?${spotQueryString}&signature=${spotSignature}`, {
-      method: 'GET',
-      headers: {
-        'X-MBX-APIKEY': apiKey,
-        'Content-Type': 'application/json'
-      }
-    });
+  const totalPing = Date.now() - inicio;
 
-    if (!spotAccRes.ok) {
-      const errorData = await spotAccRes.json().catch(() => ({}));
-      throw new Error(`Check 1 Falhou (Spot/Geral): ${errorData.msg || 'API Key inválida ou sem permissão IP'}`);
-    }
-    
-    const spotAccData = await spotAccRes.json();
-    const permissions = spotAccData.permissions || ['SPOT'];
-    
-    // Extract USDT Spot balance if any
-    let spotUsdtBalance = 0;
-    if (spotAccData.balances) {
-      const usdtAsset = spotAccData.balances.find((b: any) => b.asset === 'USDT');
-      if (usdtAsset) {
-        spotUsdtBalance = parseFloat(usdtAsset.free || '0') + parseFloat(usdtAsset.locked || '0');
-      }
-    }
-
-    // -------------------------------------------------------------
-    // CHECK 2: FUTURES ACCOUNT SPECIFIC ACCESS (Check 2 of Dual Check)
-    // -------------------------------------------------------------
-    const futuresQueryString = `timestamp=${serverTime}&recvWindow=10000`;
-    const futuresSignature = await signRequest(apiSecret, futuresQueryString);
-
-    const futuresAccRes = await fetch(`${futuresBase}/fapi/v2/account?${futuresQueryString}&signature=${futuresSignature}`, {
-      method: 'GET',
-      headers: {
-        'X-MBX-APIKEY': apiKey,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!futuresAccRes.ok) {
-      const errorData = await futuresAccRes.json().catch(() => ({}));
-      throw new Error(`Check 2 Falhou (Futuros): ${errorData.msg || 'Acesso Futuros USD-M desativado para esta chave.'}`);
-    }
-
-    const futuresAccData = await futuresAccRes.json();
-    const totalWalletBalance = parseFloat(futuresAccData.totalWalletBalance || '0');
-    const availableBalance = parseFloat(futuresAccData.availableBalance || '0');
-    const totalMarginBalance = parseFloat(futuresAccData.totalMarginBalance || '0');
-
-    const totalPing = Date.now() - startTime;
-
-    return {
-      success: true,
-      message: `Duplo Check bem-sucedido! Conexão Spot & Futuros validada via IP local (${totalPing}ms)`,
-      pingMs: Math.max(1, Math.round(totalPing / 2)),
-      spotBalance: spotUsdtBalance,
-      futuresBalance: totalWalletBalance,
-      permissions: [...permissions, 'FUTURES'],
-      futuresDetails: {
-        totalWalletBalance,
-        availableBalance,
-        totalMarginBalance
-      }
-    };
-
-  } catch (error: any) {
-    return {
-      success: false,
-      message: error.message || 'Falha de comunicação com os servidores da Binance.'
-    };
+  // Nenhum dos dois passou: a chave não serve para nada.
+  if (!spot?.success && !futuros?.success) {
+    const motivo = spot?.message || futuros?.message || 'Falha de comunicação com a Binance.';
+    return { success: false, message: motivo, pingMs: spot?.pingMs || futuros?.pingMs };
   }
+
+  const saldoSpot = spot?.success ? Number(spot.accountBalanceUsdt) || 0 : 0;
+  const saldoFuturos = futuros?.success ? Number(futuros.accountBalanceUsdt) || 0 : 0;
+
+  const permissoes: string[] = [];
+  if (spot?.success) permissoes.push('SPOT');
+  if (futuros?.success) permissoes.push('FUTURES');
+  if (spot?.permissions?.length) permissoes.push(...spot.permissions);
+
+  // Um dos dois falhou: é informação útil, não motivo para esconder o resultado.
+  const parcial = !spot?.success
+    ? ` Spot indisponível para esta chave: ${spot?.message || 'sem detalhe'}`
+    : !futuros?.success
+    ? ` Futuros indisponível para esta chave: ${futuros?.message || 'sem detalhe'}`
+    : '';
+
+  return {
+    success: true,
+    message: `Ligação confirmada pela Binance em ${totalPing}ms.${parcial}`,
+    pingMs: spot?.pingMs || futuros?.pingMs || Math.round(totalPing / 2),
+    spotBalance: saldoSpot,
+    futuresBalance: saldoFuturos,
+    permissions: Array.from(new Set(permissoes)),
+    futuresDetails: futuros?.success
+      ? {
+          totalWalletBalance: saldoFuturos,
+          availableBalance: saldoFuturos,
+          totalMarginBalance: saldoFuturos
+        }
+      : undefined
+  };
 }
 
 /**
- * Execute client-side order dispatching for Futuros/Spot directly from user browser IP
+ * Envia a ordem à Binance através do proxy do servidor.
+ * O nome continua o mesmo para não partir quem já a chama.
  */
 export async function dispatchClientSideBinanceOrder(params: {
   apiKey: string;
@@ -162,68 +171,39 @@ export async function dispatchClientSideBinanceOrder(params: {
   priceUsd: number;
   type: 'MARKET' | 'LIMIT';
 }): Promise<any> {
-  const spotBase = params.isTestnet ? 'https://testnet.binance.vision' : 'https://api.binance.com';
-  const futuresBase = params.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
-  
-  const formattedSymbol = params.symbol.toUpperCase().endsWith('USDT') 
-    ? params.symbol.toUpperCase() 
+  const simbolo = params.symbol.toUpperCase().endsWith('USDT')
+    ? params.symbol.toUpperCase()
     : `${params.symbol.toUpperCase()}USDT`;
 
-  try {
-    // Sync time
-    const timeRes = await fetch(`${spotBase}/api/v3/time`);
-    const timeData = await timeRes.json();
-    const timestamp = timeData.serverTime;
+  if (!params.priceUsd || params.priceUsd <= 0) {
+    return { success: false, message: 'Preço inválido: não dá para calcular a quantidade da ordem.' };
+  }
 
-    const qty = (params.sizeUsd / params.priceUsd).toFixed(4);
+  const quantidade = (params.sizeUsd / params.priceUsd).toFixed(4);
 
-    let queryParts = [
-      `symbol=${formattedSymbol}`,
-      `side=${params.side.toUpperCase()}`,
-      `type=${params.type.toUpperCase()}`,
-      `quantity=${qty}`,
-      `timestamp=${timestamp}`,
-      `recvWindow=10000`
-    ];
+  const resposta = await chamarProxy('/api/binance/order', {
+    apiKey: params.apiKey,
+    apiSecret: params.apiSecret,
+    environment: params.isTestnet ? 'testnet' : 'binance_pt',
+    accountType: params.accountType,
+    symbol: simbolo,
+    side: params.side.toUpperCase(),
+    type: params.type.toUpperCase(),
+    quantity: quantidade
+  });
 
-    if (params.type === 'LIMIT') {
-      queryParts.push(`price=${params.priceUsd.toFixed(2)}`);
-      queryParts.push(`timeInForce=GTC`);
-    }
-
-    if (params.accountType === 'FUTURES') {
-      // Add standard fields if needed, futures often defaults timeInForce
-    }
-
-    const queryString = queryParts.join('&');
-    const signature = await signRequest(params.apiSecret, queryString);
-    const finalUrl = params.accountType === 'FUTURES'
-      ? `${futuresBase}/fapi/v1/order?${queryString}&signature=${signature}`
-      : `${spotBase}/api/v3/order?${queryString}&signature=${signature}`;
-
-    const orderRes = await fetch(finalUrl, {
-      method: 'POST',
-      headers: {
-        'X-MBX-APIKEY': params.apiKey,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = await orderRes.json();
-    if (!orderRes.ok) {
-      throw new Error(data.msg || 'Erro ao enviar ordem na Binance');
-    }
-
-    return {
-      success: true,
-      orderId: data.orderId || data.clientOrderId,
-      status: data.status || 'FILLED',
-      message: 'Ordem despachada com sucesso diretamente via IP local!'
-    };
-  } catch (error: any) {
+  if (!resposta?.success) {
     return {
       success: false,
-      message: error.message || 'Falha ao processar ordem na Binance.'
+      message: resposta?.message || 'Falha ao processar ordem na Binance.'
     };
   }
+
+  return {
+    success: true,
+    orderId: resposta.orderId,
+    status: resposta.status || 'FILLED',
+    executedQty: resposta.executedQty,
+    message: resposta.message || 'Ordem aceite pela Binance.'
+  };
 }
