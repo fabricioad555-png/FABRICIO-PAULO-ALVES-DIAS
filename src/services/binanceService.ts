@@ -55,6 +55,8 @@ interface BinanceTestResult {
   spotBalance?: number;
   futuresBalance?: number;
   permissions?: string[];
+  restricaoDeIp?: boolean;
+  ipDoServidor?: string | null;
   restricoesDaChave?: RestricoesDaChave | null;
   mercadoRecomendado?: 'SPOT' | 'FUTURES' | null;
   futuresDetails?: {
@@ -111,7 +113,8 @@ async function chamarProxy(caminho: string, corpo: any) {
 export async function doubleCheckBinanceConnection(
   apiKey: string,
   apiSecret: string,
-  isTestnet: boolean = false
+  isTestnet: boolean = false,
+  mercadoEscolhido: 'SPOT' | 'FUTURES' = 'FUTURES'
 ): Promise<BinanceTestResult> {
   const inicio = Date.now();
   const environment = isTestnet ? 'testnet' : 'binance_pt';
@@ -127,10 +130,25 @@ export async function doubleCheckBinanceConnection(
 
   const totalPing = Date.now() - inicio;
 
-  // Nenhum dos dois passou: a chave não serve para nada.
+  // Nenhum dos dois passou. A escolha da mensagem importa: as duas chamadas
+  // falham por motivos diferentes e mostrar a errada manda a pessoa mexer no
+  // lugar errado.
   if (!spot?.success && !futuros?.success) {
-    const motivo = spot?.message || futuros?.message || 'Falha de comunicação com a Binance.';
-    return { success: false, message: motivo, pingMs: spot?.pingMs || futuros?.pingMs };
+    // 1. A Binance só diz "request ip" em parte das respostas. Quando aparece
+    //    numa delas, é o diagnóstico mais útil que existe e ganha das outras.
+    const porIp = [spot, futuros].find((r) => r?.restricaoDeIp);
+    // 2. Sem isso, vale o erro do mercado que a pessoa escolheu na tela.
+    const doMercado = mercadoEscolhido === 'SPOT' ? spot : futuros;
+
+    const escolhida = porIp || doMercado || spot || futuros;
+
+    return {
+      success: false,
+      message: escolhida?.message || 'Falha de comunicação com a Binance.',
+      pingMs: escolhida?.pingMs,
+      restricaoDeIp: Boolean(porIp),
+      ipDoServidor: porIp?.ipDoServidor || null
+    };
   }
 
   const saldoSpot = spot?.success ? Number(spot.accountBalanceUsdt) || 0 : 0;

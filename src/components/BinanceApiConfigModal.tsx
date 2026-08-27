@@ -43,7 +43,7 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
 
     try {
       const isTestnet = environment === 'testnet';
-      const result = await doubleCheckBinanceConnection(apiKey, apiSecret, isTestnet);
+      const result = await doubleCheckBinanceConnection(apiKey, apiSecret, isTestnet, accountType);
 
       if (result.success) {
         setTestResult({
@@ -180,7 +180,7 @@ export function BinanceApiConfigModal({ isOpen, onClose, config, onConnectedSucc
             </div>
             <div>
               <h3 className="font-sans font-bold text-lg text-white">Conexão API Binance</h3>
-              <p className="text-slate-400 text-xs">Acesso Direto & Bypass de Geobloqueio</p>
+              <p className="text-slate-400 text-xs">Ligação validada na Binance antes de operar</p>
             </div>
           </div>
           <button 
