@@ -5,6 +5,7 @@ import {
 import { BinanceApiConfigModal } from './BinanceApiConfigModal';
 import { getTradingAccount, TRADING_ACCOUNT_EVENT } from '../services/tradingExecutionService';
 import { BinanceApiConfig } from '../types/tradingTypes';
+import { consultarTerminalDeOperacao } from '../services/terminalOperacaoService';
 
 const PROMPT_FLAG = 'binance_api_prompt_shown';
 
@@ -25,17 +26,27 @@ export function BinanceApiConfigSection() {
     return () => window.removeEventListener(TRADING_ACCOUNT_EVENT, sync);
   }, []);
 
-  // Abre a janela automaticamente na primeira entrada, enquanto não houver chaves gravadas.
+  // Abre a janela automaticamente na primeira entrada, enquanto não houver
+  // chaves gravadas. Mas não aqui: fora do terminal de operação a Binance
+  // recusa por lista branca de IP, e abrir a janela leva direto a um erro que
+  // nada nesta página pode resolver.
   useEffect(() => {
     const current = getTradingAccount().binanceConfig;
     if (current?.isConnected) return;
-    try {
-      if (sessionStorage.getItem(PROMPT_FLAG)) return;
-      sessionStorage.setItem(PROMPT_FLAG, '1');
-    } catch {
-      // Armazenamento indisponível (janela anónima): abre à mesma.
-    }
-    setIsModalOpen(true);
+
+    let cancelado = false;
+    consultarTerminalDeOperacao().then((terminal) => {
+      if (cancelado || !terminal.aqui) return;
+      try {
+        if (sessionStorage.getItem(PROMPT_FLAG)) return;
+        sessionStorage.setItem(PROMPT_FLAG, '1');
+      } catch {
+        // Armazenamento indisponível (janela anónima): abre à mesma.
+      }
+      setIsModalOpen(true);
+    });
+
+    return () => { cancelado = true; };
   }, []);
 
   const isConnected = Boolean(config?.isConnected);

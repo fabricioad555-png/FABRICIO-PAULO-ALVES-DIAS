@@ -3043,7 +3043,7 @@ function ajustarAoPasso(quantidade: number, passo: number): string {
 // Endpoint: Execute Real Order on Binance
 app.post("/api/binance/order", async (req, res) => {
   try {
-    const { apiKey, apiSecret, environment = 'binance_pt', accountType = 'SPOT', symbol, side, type = 'MARKET', quantity, sizeUsd, precoReferencia, proxyUrl, serverCluster } = req.body;
+    const { apiKey, apiSecret, environment = 'binance_pt', accountType = 'SPOT', symbol, side, type = 'MARKET', quantity, sizeUsd, precoReferencia, proxyUrl, serverCluster, apenasEnsaio } = req.body;
 
     if (!apiKey || !apiSecret || !symbol || !side) {
       return res.status(400).json({
@@ -3069,7 +3069,12 @@ app.post("/api/binance/order", async (req, res) => {
       baseUrl = `https://${serverCluster.trim()}`;
     }
 
-    const endpoint = isFutures ? "/fapi/v1/order" : "/api/v3/order";
+    // A Binance tem um endpoint que valida a ordem por inteiro, assinatura,
+    // par, quantidade e filtros, sem executar nada. Serve para provar que o
+    // caminho esta bom sem gastar dinheiro de verdade.
+    const endpoint = apenasEnsaio
+      ? (isFutures ? "/fapi/v1/order/test" : "/api/v3/order/test")
+      : (isFutures ? "/fapi/v1/order" : "/api/v3/order");
     const timestamp = Date.now();
     // O par vinha com "USDT" colado sempre, mesmo quando ja era um par
     // completo: BTCUSDT virava BTCUSDTUSDT e a Binance recusava com
@@ -3164,7 +3169,11 @@ app.post("/api/binance/order", async (req, res) => {
     const formattedSide = side.toUpperCase() === 'LONG' ? 'BUY' : side.toUpperCase() === 'SHORT' ? 'SELL' : side.toUpperCase();
 
     let queryParams = `symbol=${formattedSymbol}&side=${formattedSide}&type=${type}&timestamp=${timestamp}&recvWindow=60000`;
-    if (quantity) {
+    // Tem de olhar para a quantidade final, e nao para a que veio do navegador:
+    // desde que o servidor passou a calcula-la a partir do tamanho em dolares,
+    // um pedido sem "quantity" saia sem quantidade nenhuma e a Binance recusava
+    // com "Mandatory parameter 'quantity' was not sent".
+    if (Number(quantidadeFinal) > 0) {
       queryParams += `&quantity=${quantidadeFinal}`;
     }
 
@@ -3209,7 +3218,10 @@ app.post("/api/binance/order", async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Ordem executada com sucesso na Binance!`,
+      apenasEnsaio: Boolean(apenasEnsaio),
+      message: apenasEnsaio
+        ? `Ensaio aceite pela Binance: a ordem passaria. Nada foi executado.`
+        : `Ordem executada com sucesso na Binance!`,
       orderId: data.orderId || data.clientOrderId,
       status: data.status,
       executedQty: data.executedQty,
