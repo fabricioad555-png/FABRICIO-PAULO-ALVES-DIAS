@@ -5,6 +5,15 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import crypto from "crypto";
+// @ts-ignore - modulo em JavaScript simples, sem tipos
+import {
+  auditoriaAtiva,
+  lerAuditoria,
+  mascararChave,
+  registarChamada,
+  registarLigacao,
+  registarOrdem
+} from "./auditoria.mjs";
 
 dotenv.config();
 
@@ -14,6 +23,101 @@ const PORT = 3000;
 // Enable gzip/deflate compression for high-performance payload transfers
 app.use(compression());
 app.use(express.json({ limit: "5mb" }));
+
+/**
+ * Auditoria das chamadas.
+ *
+ * Na Vercel isto acontece no wrapper de api/index.ts, mas quando o servidor
+ * corre em casa esse wrapper nao existe e nada era gravado. Como o modo real
+ * de operar so funciona a partir daqui, era justamente a operacao que ficava
+ * sem registo.
+ *
+ * A gravacao corre antes da resposta sair e qualquer falha e engolida: a
+ * auditoria nunca pode derrubar a rota que esta a auditar.
+ */
+async function registarChamadaDaRota(req: any, res: any, resposta: any, duracaoMs: number) {
+  const rota = String(req.path || "");
+  const corpo = req.body || {};
+  const tarefas: Promise<any>[] = [
+    registarChamada({
+      metodo: req.method,
+      rota,
+      statusHttp: res.statusCode,
+      duracaoMs,
+      regiao: process.env.VERCEL_REGION || "local"
+    })
+  ];
+
+  if (rota === "/api/binance/test-connection") {
+    tarefas.push(registarLigacao({
+      ambiente: corpo.environment,
+      tipoConta: corpo.accountType,
+      cluster: corpo.serverCluster,
+      chaveMascarada: mascararChave(corpo.apiKey),
+      sucesso: resposta?.success === true,
+      codigoErro: resposta?.errorCode,
+      mensagem: resposta?.message,
+      pingMs: resposta?.pingMs,
+      saldoUsdt: resposta?.accountBalanceUsdt
+    }));
+  }
+
+  if (rota === "/api/binance/order") {
+    tarefas.push(registarOrdem({
+      ambiente: corpo.environment,
+      tipoConta: corpo.accountType,
+      simbolo: corpo.symbol,
+      lado: corpo.side,
+      tipo: corpo.type,
+      quantidade: corpo.quantity,
+      status: resposta?.status,
+      orderIdBinance: resposta?.orderId,
+      quantidadeExecutada: resposta?.executedQty,
+      valorExecutado: resposta?.cummulativeQuoteQty,
+      sucesso: resposta?.success === true,
+      mensagem: resposta?.message,
+      resposta: resposta?.data || resposta?.error || null
+    }));
+  }
+
+  await Promise.all(tarefas);
+}
+
+app.use((req, res, next) => {
+  if (!auditoriaAtiva() || !String(req.path || "").startsWith("/api/")) return next();
+
+  const inicio = Date.now();
+  const jsonOriginal = res.json.bind(res);
+  res.json = (payload: any) => {
+    registarChamadaDaRota(req, res, payload, Date.now() - inicio)
+      .catch(() => undefined)
+      .finally(() => jsonOriginal(payload));
+    return res;
+  };
+
+  next();
+});
+
+// Leitura da auditoria. Na Vercel existe tambem como funcao em api/auditoria.ts,
+// que ganha por ser resolvida no sistema de ficheiros antes dos rewrites. Sem
+// esta rota, o pedido caia no catch-all e o painel recebia HTML em vez de JSON.
+app.get("/api/auditoria", async (req, res) => {
+  if (!auditoriaAtiva()) {
+    return res.json({
+      ativa: false,
+      mensagem: "Auditoria desligada: faltam as variaveis SUPABASE_URL e SUPABASE_KEY."
+    });
+  }
+
+  const bruto = Number(req.query.limite);
+  const limite = Number.isFinite(bruto) ? Math.min(Math.max(Math.trunc(bruto), 1), 200) : 40;
+
+  try {
+    return res.json(await lerAuditoria({ limite }));
+  } catch (error: any) {
+    return res.status(500).json({ ativa: true, erro: `Falha ao ler a auditoria: ${error?.message || error}` });
+  }
+});
 
 // Initialize Gemini Client server-side
 const getGeminiClient = () => {

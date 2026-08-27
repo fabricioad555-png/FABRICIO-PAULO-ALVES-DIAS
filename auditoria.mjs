@@ -5,22 +5,31 @@
 // servico consegue ler e escrever. Sem essa variavel de ambiente a auditoria
 // fica desligada e a API continua a funcionar exatamente como antes.
 
-const URL_BASE = process.env.SUPABASE_URL || '';
+// As variaveis sao lidas na hora do uso, e nao no carregamento do modulo.
+// Em ESM os imports correm antes do dotenv.config() do server.ts, por isso
+// ler aqui em cima deixava tudo vazio quando o servidor corre em casa.
+function urlBase() {
+  return process.env.SUPABASE_URL || '';
+}
+
 // A chave de servico tem precedencia. A publicavel serve porque as politicas
 // da base sao append-only: com ela da para inserir e ler, nunca alterar nem
 // apagar. Basta definir SUPABASE_SERVICE_ROLE_KEY para passar a usa-la.
-const CHAVE = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '';
+function chave() {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '';
+}
 
 const TEMPO_LIMITE_MS = 2500;
 
 export function auditoriaAtiva() {
-  return Boolean(URL_BASE && CHAVE);
+  return Boolean(urlBase() && chave());
 }
 
 function cabecalhos(extra = {}) {
+  const k = chave();
   return {
-    apikey: CHAVE,
-    Authorization: `Bearer ${CHAVE}`,
+    apikey: k,
+    Authorization: `Bearer ${k}`,
     'Content-Type': 'application/json',
     ...extra
   };
@@ -41,7 +50,7 @@ async function inserir(tabela, registo) {
   if (!auditoriaAtiva()) return null;
 
   try {
-    const resposta = await fetch(`${URL_BASE}/rest/v1/${tabela}`, {
+    const resposta = await fetch(`${urlBase()}/rest/v1/${tabela}`, {
       method: 'POST',
       headers: cabecalhos({ Prefer: 'return=minimal' }),
       body: JSON.stringify(registo),
@@ -143,7 +152,7 @@ async function listar(tabela, { limite = 50, ordem = 'criada_em' } = {}) {
   if (!auditoriaAtiva()) return { linhas: [], erro: 'auditoria desligada' };
 
   try {
-    const url = `${URL_BASE}/rest/v1/${tabela}?select=*&order=${ordem}.desc&limit=${limite}`;
+    const url = `${urlBase()}/rest/v1/${tabela}?select=*&order=${ordem}.desc&limit=${limite}`;
     const resposta = await fetch(url, {
       headers: cabecalhos(),
       signal: AbortSignal.timeout(TEMPO_LIMITE_MS * 2)
@@ -200,7 +209,7 @@ export async function lerAuditoria({ limite = 40 } = {}) {
       ordensComSucesso,
       eventosDeErro: eventos.filter((e) => e.nivel === 'erro').length,
       latenciaMediaMs: latenciaMedia,
-      regiao: process.env.VERCEL_REGION || null
+      regiao: process.env.VERCEL_REGION || 'local'
     },
     ligacoes,
     ordens,

@@ -925,6 +925,62 @@ export function determineSignalSide(signal: HighFrequencyConfluenceResult, isInv
 /**
  * Attempts to execute a trade based on AI Confluence Signal
  */
+/**
+ * Envia a posicao recem-aberta para a Binance.
+ *
+ * Existiam tres caminhos que abriam posicao e so um enviava a ordem de verdade.
+ * Nos outros dois a posicao aparecia no painel e nada acontecia na corretora,
+ * o que da a impressao de estar operando sem estar. Agora os tres passam por
+ * aqui.
+ *
+ * Nao lanca: uma falha de envio fica registada nos logs da posicao.
+ */
+export function enviarOrdemParaBinance(account: TradingAccount, novaPosicao: TradePosition) {
+  const cfg = account.binanceConfig;
+
+  if (account.operationMode !== 'REAL' || !cfg?.isConnected) {
+    const posicoes = getPositions();
+    const alvo = posicoes.find(p => p.id === novaPosicao.id);
+    if (alvo) {
+      alvo.executionLogs.push(
+        account.operationMode !== 'REAL'
+          ? 'Modo Demo: posicao simulada, nenhuma ordem foi enviada a Binance.'
+          : 'Sem ligacao a Binance: posicao simulada, nenhuma ordem foi enviada.'
+      );
+      savePositions(posicoes);
+    }
+    return;
+  }
+
+  dispatchClientSideBinanceOrder({
+    apiKey: cfg.apiKey,
+    apiSecret: cfg.apiSecret,
+    isTestnet: cfg.environment === 'testnet',
+    accountType: cfg.accountType,
+    symbol: novaPosicao.symbol,
+    side: novaPosicao.side === 'LONG' ? 'BUY' : 'SELL',
+    sizeUsd: novaPosicao.sizeUsd,
+    priceUsd: novaPosicao.entryPrice,
+    type: 'MARKET'
+  }).then(res => {
+    const posicoes = getPositions();
+    const alvo = posicoes.find(p => p.id === novaPosicao.id);
+    if (!alvo) return;
+    alvo.executionLogs.push(
+      res.success
+        ? `Ordem aceite pela Binance (${cfg.accountType === 'FUTURES' ? 'Futuros USD-M' : 'Spot'}). ID: ${res.orderId}`
+        : `Binance recusou a ordem: ${res.message}`
+    );
+    savePositions(posicoes);
+  }).catch(err => {
+    const posicoes = getPositions();
+    const alvo = posicoes.find(p => p.id === novaPosicao.id);
+    if (!alvo) return;
+    alvo.executionLogs.push(`Falha ao enviar a ordem a Binance: ${err?.message || err}`);
+    savePositions(posicoes);
+  });
+}
+
 export function processConfluenceSignalForTrading(
   signal: HighFrequencyConfluenceResult,
   currentPrice: number,
@@ -1151,6 +1207,8 @@ export function processConfluenceSignalForTrading(
   
   saveTradingAccount(account);
   savePositions(positions);
+  enviarOrdemParaBinance(account, newPosition);
+  savePositions(positions);
 
   return { 
     account, 
@@ -1288,6 +1346,7 @@ export function executeDirectTradeForCrypto(
   
   saveTradingAccount(account);
   savePositions(positions);
+  enviarOrdemParaBinance(account, newPosition);
 
   return { 
     account, 
@@ -1552,37 +1611,7 @@ export function executeHftOrderWithImputedData(
   saveTradingAccount(account);
   savePositions(positions);
 
-  if (account.operationMode === 'REAL' && account.binanceConfig?.isConnected) {
-    dispatchClientSideBinanceOrder({
-      apiKey: account.binanceConfig.apiKey,
-      apiSecret: account.binanceConfig.apiSecret,
-      isTestnet: account.binanceConfig.environment === 'testnet',
-      accountType: account.binanceConfig.accountType,
-      symbol: newPosition.symbol,
-      side: newPosition.side === 'LONG' ? 'BUY' : 'SELL',
-      sizeUsd: newPosition.sizeUsd,
-      priceUsd: newPosition.entryPrice,
-      type: 'MARKET'
-    }).then(res => {
-      const updatedPositions = getPositions();
-      const posToUpdate = updatedPositions.find(p => p.id === newPosition.id);
-      if (posToUpdate) {
-        if (res.success) {
-          posToUpdate.executionLogs.push(`✅ [Binance API]: Ordem enviada via IP local (${account.binanceConfig?.accountType === 'FUTURES' ? 'Futuros USD-M' : 'Spot'}). ID: ${res.orderId}`);
-        } else {
-          posToUpdate.executionLogs.push(`❌ [Binance API] Falha: ${res.message}`);
-        }
-        savePositions(updatedPositions);
-      }
-    }).catch(err => {
-      const updatedPositions = getPositions();
-      const posToUpdate = updatedPositions.find(p => p.id === newPosition.id);
-      if (posToUpdate) {
-        posToUpdate.executionLogs.push(`❌ [Binance API] Erro de rede/assinatura: ${err.message || err}`);
-        savePositions(updatedPositions);
-      }
-    });
-  }
+  enviarOrdemParaBinance(account, newPosition);
 
   return {
     account,
