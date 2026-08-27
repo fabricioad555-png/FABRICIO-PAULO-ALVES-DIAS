@@ -50,21 +50,47 @@ De quebra, a chave secreta não precisa assinar dentro do JavaScript da página.
 
 ## O que a Binance exige para o modo real funcionar
 
-Três coisas, e vale conferir antes de culpar o código:
+### Restrição de IP na chave
 
-1. **Sem restrição de IP na chave.** A função roda na Vercel e o IP de saída
-   muda entre arranques. Já foi medido mudando de `51.44.253.77` para
-   `35.180.126.110` no mesmo dia. Autorizar um IP na lista branca não segura.
-   Se a chave tiver a restrição ligada, a Binance recusa com o código `-2015` e
-   a interface mostra qual IP foi barrado.
+Se a chave tiver lista branca de IP, a Binance recusa com o código `-2015`. Não
+adianta autorizar o IP da Vercel: ele muda entre arranques, já foi medido indo
+de `51.44.253.77` para `35.180.126.110` no mesmo dia. A interface mostra qual
+IP foi barrado a cada tentativa.
 
-2. **A permissão do mercado certo.** Uma chave com `enableFutures` ligado e
-   `enableSpotAndMarginTrading` desligado não envia ordem Spot, mesmo com o IP
-   liberado. Dá para conferir em `GET /sapi/v1/account/apiRestrictions`.
+Dá para manter a restrição, por dois caminhos:
 
-3. **Região do servidor fora dos Estados Unidos.** De IP americano a Binance
-   devolve `HTTP 451` em qualquer chamada assinada. Por isso o `vercel.json`
-   fixa a região em `cdg1`.
+- **Rodar em casa.** `npm start` na máquina cujo IP está autorizado. O servidor
+  passa a sair pelo IP certo e a chave é aceita como está. Foi assim que a
+  ligação foi validada pela primeira vez.
+- **Proxy com IP fixo.** O campo de gateway no modal e o parâmetro `proxyUrl`
+  das rotas apontam a chamada para outro endereço. Basta um host barato com IP
+  estático e autorizar só ele na Binance.
+
+Sem nenhum dos dois, a alternativa é desligar a restrição na chave.
+
+### Permissão de mercado
+
+Uma chave com `enableFutures` ligado e `enableSpotAndMarginTrading` desligado
+não envia ordem Spot, mesmo com o IP liberado. Pior: a conta responde
+`canTrade: true` e a recusa só aparece na hora de enviar a ordem.
+
+**Isso é detectado sozinho.** Ao ligar, o servidor consulta
+`/sapi/v1/account/apiRestrictions` e devolve `restricoesDaChave` e
+`mercadoRecomendado`. Se escolher Spot com uma chave que só opera Futuros, a
+resposta avisa qual é o mercado liberado. Não é preciso ligar permissão
+nenhuma: o sistema usa a que já existe.
+
+### Região do servidor
+
+De IP americano a Binance devolve `HTTP 451` em qualquer chamada assinada. Por
+isso o `vercel.json` fixa a região em `cdg1`.
+
+### Relógio
+
+Pedido assinado com horário fora da janela devolve `-1021`. Foi encontrada uma
+máquina com 193 segundos de atraso, muito acima da `recvWindow` máxima de 60
+segundos. Por isso o horário das assinaturas é sempre o da Binance, nunca o do
+relógio local.
 
 Mantenha os saques desligados na chave. É o que limita o estrago caso ela vaze.
 

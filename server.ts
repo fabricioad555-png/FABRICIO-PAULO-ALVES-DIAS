@@ -2235,6 +2235,68 @@ function signBinanceQuery(queryString: string, apiSecret: string): string {
   return crypto.createHmac("sha256", apiSecret).update(queryString).digest("hex");
 }
 
+/**
+ * Le as restricoes reais da chave na Binance.
+ *
+ * A conta pode responder canTrade: true e mesmo assim a chave ter o Spot
+ * desligado: nesse caso a ordem so e recusada na hora de enviar. Estas
+ * restricoes sao a fonte da verdade sobre o que a chave consegue fazer.
+ *
+ * O /sapi so existe no dominio spot, por isso mesmo numa ligacao de futuros
+ * a consulta vai para api.binance.com.
+ */
+async function lerRestricoesDaChave(
+  apiKey: string,
+  apiSecret: string,
+  baseUsado: string,
+  isFutures: boolean
+): Promise<{
+  podeOperarSpot: boolean;
+  podeOperarFuturos: boolean;
+  podeLevantar: boolean;
+  restricaoDeIp: boolean;
+} | null> {
+  const base = isFutures ? "https://api.binance.com" : baseUsado;
+
+  try {
+    // O relogio da maquina pode estar fora de hora. Foi medido um atraso de
+    // 193 segundos numa maquina real, o que estoura a recvWindow (maximo 60s)
+    // e devolve -1021. O horario que vale e o da Binance.
+    let horario = Date.now();
+    try {
+      const t = await fetch(`${base}/api/v3/time`, { signal: AbortSignal.timeout(4000) });
+      const td: any = await t.json();
+      if (td?.serverTime) horario = Number(td.serverTime);
+    } catch {
+      // Sem sincronia, tenta com o relogio local mesmo.
+    }
+
+    const queryString = `timestamp=${horario}&recvWindow=60000`;
+    const signature = signBinanceQuery(queryString, apiSecret);
+
+    const resposta = await fetch(
+      `${base}/sapi/v1/account/apiRestrictions?${queryString}&signature=${signature}`,
+      {
+        headers: { "X-MBX-APIKEY": apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(7000)
+      }
+    );
+
+    if (!resposta.ok) return null;
+
+    const d: any = await resposta.json();
+    return {
+      podeOperarSpot: Boolean(d.enableSpotAndMarginTrading),
+      podeOperarFuturos: Boolean(d.enableFutures),
+      podeLevantar: Boolean(d.enableWithdrawals),
+      restricaoDeIp: Boolean(d.ipRestrict)
+    };
+  } catch {
+    // Diagnostico e opcional: nunca pode impedir uma ligacao valida.
+    return null;
+  }
+}
+
 // Endpoint: Binance Network Ping & Telemetry
 app.get("/api/binance/ping", async (req, res) => {
   const startTime = Date.now();
@@ -2609,6 +2671,30 @@ app.post("/api/binance/test-connection", async (req, res) => {
 
     const envName = environment === 'binance_pt' ? 'Binance Portugal / Europa (PT)' : environment.toUpperCase();
 
+    // O que a conta consegue ler não é o que a chave consegue operar. A conta
+    // pode dizer canTrade: true e a chave ter o Spot desligado, e aí a ordem é
+    // recusada só na hora de enviar. Estas restrições são a fonte da verdade.
+    const restricoes = await lerRestricoesDaChave(
+      cleanApiKey,
+      cleanApiSecret,
+      successfulBaseUrl,
+      isFutures
+    );
+
+    let mercadoRecomendado: 'SPOT' | 'FUTURES' | null = null;
+    if (restricoes) {
+      if (restricoes.podeOperarFuturos && !restricoes.podeOperarSpot) mercadoRecomendado = 'FUTURES';
+      else if (restricoes.podeOperarSpot && !restricoes.podeOperarFuturos) mercadoRecomendado = 'SPOT';
+      else if (restricoes.podeOperarSpot && restricoes.podeOperarFuturos) mercadoRecomendado = accountType;
+    }
+
+    const avisoMercado =
+      restricoes && mercadoRecomendado && mercadoRecomendado !== accountType
+        ? ` Atenção: esta chave não pode operar ${accountType}. O mercado liberado é ${mercadoRecomendado}.`
+        : restricoes && !mercadoRecomendado
+        ? ' Atenção: esta chave não tem nenhum mercado liberado para operar, só leitura.'
+        : '';
+
     return res.json({
       success: true,
       isConnected: true,
@@ -2616,23 +2702,26 @@ app.post("/api/binance/test-connection", async (req, res) => {
       accountBalanceUsdt: totalUsdt,
       assetsBreakdown: assetsList,
       permissions,
+      restricoesDaChave: restricoes,
+      mercadoRecomendado,
       environment,
       accountType,
       serverCluster: successfulBaseUrl.replace('https://', ''),
-      message: `🟢 Ligação estabelecida com sucesso à ${envName}! Saldo real identificado: $${totalUsdt.toFixed(2)} USDT.`
+      message: `🟢 Ligação estabelecida com sucesso à ${envName}! Saldo real identificado: $${totalUsdt.toFixed(2)} USDT.${avisoMercado}`
     });
   } catch (error: any) {
     const pingMs = Date.now() - startTime;
-    const parsedCustom = parseFloat(req.body?.customBalanceUsdt) || 1000;
-    return res.json({
-      success: true,
-      isConnected: true,
-      isVerified: true,
-      accountBalanceUsdt: parsedCustom,
-      assetsBreakdown: [{ asset: 'USDT', free: parsedCustom, locked: 0, total: parsedCustom, estimatedUsdt: parsedCustom }],
-      permissions: ['Leitura', 'Trading Spot'],
-      message: `🟢 Chaves registradas e sessão Binance ativada com sucesso!`,
-      pingMs
+    // Uma exceção aqui não é ligação estabelecida. Antes este bloco respondia
+    // sucesso com saldo de 1000 USDT, o que dava a conta por ligada sempre que
+    // alguma coisa falhava pelo caminho.
+    return res.status(500).json({
+      success: false,
+      isConnected: false,
+      isVerified: false,
+      pingMs,
+      environment: req.body?.environment,
+      accountType: req.body?.accountType,
+      message: `Erro interno ao validar as chaves na Binance: ${error?.message || error}. A ligação não foi estabelecida.`
     });
   }
 });

@@ -41,6 +41,13 @@ export async function signRequest(secret: string, queryString: string): Promise<
   }
 }
 
+interface RestricoesDaChave {
+  podeOperarSpot: boolean;
+  podeOperarFuturos: boolean;
+  podeLevantar: boolean;
+  restricaoDeIp: boolean;
+}
+
 interface BinanceTestResult {
   success: boolean;
   message: string;
@@ -48,6 +55,8 @@ interface BinanceTestResult {
   spotBalance?: number;
   futuresBalance?: number;
   permissions?: string[];
+  restricoesDaChave?: RestricoesDaChave | null;
+  mercadoRecomendado?: 'SPOT' | 'FUTURES' | null;
   futuresDetails?: {
     totalWalletBalance: number;
     availableBalance: number;
@@ -139,9 +148,27 @@ export async function doubleCheckBinanceConnection(
     ? ` Futuros indisponível para esta chave: ${futuros?.message || 'sem detalhe'}`
     : '';
 
+  // O servidor consulta as restrições reais da chave. Se ela só pode operar um
+  // dos mercados, é esse que vale, independentemente do que estiver escolhido
+  // na tela: assumir Spot por omissão é o que fazia a ordem ser recusada só na
+  // hora de enviar.
+  const restricoes = futuros?.restricoesDaChave || spot?.restricoesDaChave || null;
+  const mercadoRecomendado: 'SPOT' | 'FUTURES' | null =
+    futuros?.mercadoRecomendado || spot?.mercadoRecomendado || null;
+
+  const avisoMercado = restricoes
+    ? !restricoes.podeOperarSpot && !restricoes.podeOperarFuturos
+      ? ' Esta chave é só de leitura: nenhum mercado está liberado para operar.'
+      : mercadoRecomendado
+      ? ` Mercado liberado para operar: ${mercadoRecomendado}.`
+      : ''
+    : '';
+
   return {
     success: true,
-    message: `Ligação confirmada pela Binance em ${totalPing}ms.${parcial}`,
+    restricoesDaChave: restricoes,
+    mercadoRecomendado,
+    message: `Ligação confirmada pela Binance em ${totalPing}ms.${parcial}${avisoMercado}`,
     pingMs: spot?.pingMs || futuros?.pingMs || Math.round(totalPing / 2),
     spotBalance: saldoSpot,
     futuresBalance: saldoFuturos,
