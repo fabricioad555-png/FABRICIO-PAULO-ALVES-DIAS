@@ -73,10 +73,13 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-40 bg-[#0a0a0b]/95 backdrop-blur-md border-b border-slate-800/60 text-white transition-all">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-3.5">
-        <div className="flex flex-col lg:flex-row items-center justify-between gap-3 lg:gap-4">
+        <div className="flex flex-col gap-3">
+
+          {/* Linha de cima: marca e busca */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           
           {/* Brand Header */}
-          <div className="flex items-center gap-3 w-full lg:w-auto justify-between lg:justify-start min-w-0">
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start min-w-0">
             <div className="flex items-baseline gap-2.5 shrink-0">
               <h1 className="text-xl sm:text-2xl font-serif italic text-white tracking-tight flex items-center gap-2">
                 <BrainCircuit className="h-5 w-5 sm:h-6 sm:w-6 text-indigo-400 inline shrink-0" />
@@ -99,7 +102,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           {/* Search Input */}
-          <div className="relative w-full lg:w-72 min-w-0">
+          <div className="relative w-full sm:w-72 shrink-0">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
             <input
               type="text"
@@ -118,8 +121,13 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </div>
 
-          {/* Action Tools & Instant Live Toggle */}
-          <div className="flex items-center gap-2 w-full lg:w-auto overflow-x-auto pb-1 lg:pb-0 scrollbar-none justify-start lg:justify-end shrink-0">
+          </div>
+
+          {/* Linha de baixo: barra de ferramentas */}
+          {/* Sem shrink-0 e com quebra de linha: antes a barra não encolhia e
+              passava por cima do resto do cabeçalho. Quebrar em vez de rolar
+              evita esconder os primeiros botões. */}
+          <div className="flex flex-wrap items-center gap-2 w-full min-w-0">
             
             {/* Lista Suspensa Nativa para Temas (Acesso Fácil) */}
             <div className="relative shrink-0">

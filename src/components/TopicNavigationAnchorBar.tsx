@@ -7,6 +7,7 @@ import {
   Database, 
   Grid, 
   ShieldCheck,
+  KeyRound,
   ChevronDown, 
   ChevronUp, 
   ChevronLeft, 
@@ -30,6 +31,17 @@ export interface TopicItem {
 
 export const TOPIC_SECTIONS: TopicItem[] = [
   {
+    id: 'section-binance-api',
+    label: 'Ligação à API Binance',
+    shortLabel: 'API Binance',
+    badge: 'Chaves',
+    icon: KeyRound,
+    accentColor: 'text-amber-400',
+    borderActiveColor: 'border-amber-500/70',
+    bgActiveColor: 'bg-amber-500/15 text-amber-200',
+    description: 'Introduza a Chave da API e a Chave Secreta para ligar o bot à sua conta Binance'
+  },
+  {
     id: 'section-system-audit',
     label: 'Auditoria do Sistema (24h)',
     shortLabel: 'Auditoria 24h',
@@ -39,6 +51,17 @@ export const TOPIC_SECTIONS: TopicItem[] = [
     borderActiveColor: 'border-indigo-500/70',
     bgActiveColor: 'bg-indigo-500/15 text-indigo-200',
     description: 'Auditoria de integridade lógica, veracidade e otimização autônoma de performance'
+  },
+  {
+    id: 'section-auditoria-bd',
+    label: 'Auditoria em Base de Dados',
+    shortLabel: 'Auditoria BD',
+    badge: 'Persistente',
+    icon: Database,
+    accentColor: 'text-sky-400',
+    borderActiveColor: 'border-sky-500/70',
+    bgActiveColor: 'bg-sky-500/15 text-sky-200',
+    description: 'Registo permanente de ligações, ordens e eventos, guardado no servidor'
   },
   {
     id: 'section-trading-bot',

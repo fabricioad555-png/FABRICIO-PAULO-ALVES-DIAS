@@ -10,6 +10,8 @@ import { InternationalForumsSentimentBlock } from './components/InternationalFor
 import { IndividualTechnicalAnalysisBlock } from './components/IndividualTechnicalAnalysisBlock';
 import { HighFrequencyConfluenceAIBlock } from './components/HighFrequencyConfluenceAIBlock';
 import { TradingExecutionDashboard } from './components/TradingExecutionDashboard';
+import { BinanceApiConfigSection } from './components/BinanceApiConfigSection';
+import { AuditoriaPersistentePanel } from './components/AuditoriaPersistentePanel';
 import { OnChainHistoryAnalysisBlock } from './components/OnChainHistoryAnalysisBlock';
 import { SentimentHeatmap } from './components/SentimentHeatmap';
 import { SystemAuditModule } from './components/SystemAuditModule';
@@ -178,6 +180,17 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-10">
         
+        {/* Ligação à API Binance: chaves introduzidas manualmente à entrada */}
+        <section
+          id="section-binance-api"
+          className="scroll-mt-36 transition-all"
+          aria-label="Ligação à API Binance"
+        >
+          <ErrorBoundary fallbackTitle="Ligação à API Binance">
+            <BinanceApiConfigSection />
+          </ErrorBoundary>
+        </section>
+
         {/* Tópico 0: Módulo de Auditoria do Sistema 24h & Otimização Autônoma */}
         <section 
           id="section-system-audit" 
@@ -189,6 +202,17 @@ export default function App() {
               cryptos={cryptos}
               forumPosts={forumPosts}
             />
+          </ErrorBoundary>
+        </section>
+
+        {/* Auditoria persistente em base de dados */}
+        <section
+          id="section-auditoria-bd"
+          className="scroll-mt-36 transition-all"
+          aria-label="Auditoria em Base de Dados"
+        >
+          <ErrorBoundary fallbackTitle="Auditoria em Base de Dados">
+            <AuditoriaPersistentePanel />
           </ErrorBoundary>
         </section>
 
