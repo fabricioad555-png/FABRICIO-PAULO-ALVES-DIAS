@@ -1,13 +1,15 @@
 @echo off
 setlocal
-title Sentinela Cripto - Servidor + Link Publico
+title Sentinela Cripto - Terminal de Operacao
 
-REM Sobe o terminal e cria um link publico para acessar de fora de casa.
+REM Sobe o terminal e cria o endereco de acesso de fora de casa.
 REM
-REM Por que precisa disso: a chave da Binance tem permissao de Futuros, e a
-REM Binance obriga trava de IP em chave com Futuros. Os pedidos precisam sair
-REM do IP desta casa. O tunel resolve: o link e publico, mas quem fala com a
-REM Binance continua sendo este computador.
+REM Por que precisa rodar aqui: a chave da Binance tem permissao de Futuros, e
+REM a Binance obriga trava de IP nesse caso. Os pedidos tem de sair do IP desta
+REM casa, entao quem fala com a corretora e sempre este computador.
+REM
+REM O endereco do tunel muda a cada arranque. Nao e preciso decorar: ele e
+REM anunciado sozinho, e a pagina fixa da Vercel mostra o caminho.
 
 cd /d "%~dp0"
 
@@ -52,17 +54,16 @@ echo.
 echo   Neste computador:  http://localhost:3000
 echo   Na rede de casa:   http://192.168.1.215:3000
 echo.
-echo   O LINK PUBLICO vai aparecer na outra janela que
-echo   esta abrindo agora, dentro de uma moldura,
-echo   terminando em .trycloudflare.com
+echo   O endereco de fora aparece abaixo em instantes,
+echo   e tambem no botao "Abrir terminal" da pagina:
+echo   https://fabricio-paulo-alves-dias.vercel.app
 echo.
-echo   Esse endereco MUDA toda vez que voce roda isto.
 echo   Deixe as DUAS janelas abertas enquanto usar.
 echo  ------------------------------------------------
 echo.
 
 start "" http://localhost:3000
-npx --yes cloudflared tunnel --url http://localhost:3000 --no-autoupdate
+node tunel.mjs
 
 echo.
 echo  O tunel foi encerrado.

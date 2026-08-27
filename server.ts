@@ -17,6 +17,8 @@ import {
 } from "./auditoria.mjs";
 // @ts-ignore - modulo em JavaScript simples, sem tipos
 import { sessaoAtiva, guardarEstado, lerEstado, apagarEstado } from "./sessao.mjs";
+// @ts-ignore - modulo em JavaScript simples, sem tipos
+import { anunciarEnlace, lerEnlace } from "./enlace.mjs";
 
 dotenv.config();
 
@@ -187,6 +189,22 @@ app.post("/api/auditoria/evento", async (req, res) => {
     dados
   });
   return res.status(201).json({ registado: true });
+});
+
+// Onde o terminal de operacao esta atendendo agora.
+//
+// Quem corre em casa anuncia o endereco do tunel aqui; a pagina da Vercel, que
+// tem endereco fixo, le e mostra o caminho. Resolve o tunel gratuito sortear um
+// nome novo a cada arranque sem obrigar ninguem a decorar endereco.
+app.post("/api/enlace", async (req, res) => {
+  const { endereco, origem } = req.body || {};
+  const r = await anunciarEnlace(endereco, origem);
+  return res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.get("/api/enlace", async (_req, res) => {
+  const r = await lerEnlace();
+  return res.status(r.ok ? 200 : 503).json(r);
 });
 
 app.get("/api/auditoria", async (req, res) => {

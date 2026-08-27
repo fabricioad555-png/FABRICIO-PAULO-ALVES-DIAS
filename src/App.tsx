@@ -13,6 +13,7 @@ import { TradingExecutionDashboard } from './components/TradingExecutionDashboar
 import { BinanceApiConfigSection } from './components/BinanceApiConfigSection';
 import { AuditoriaPersistentePanel } from './components/AuditoriaPersistentePanel';
 import { SessaoSincronizadaSection } from './components/SessaoSincronizadaSection';
+import { EnlaceOperacaoBanner } from './components/EnlaceOperacaoBanner';
 import { OnChainHistoryAnalysisBlock } from './components/OnChainHistoryAnalysisBlock';
 import { SentimentHeatmap } from './components/SentimentHeatmap';
 import { SystemAuditModule } from './components/SystemAuditModule';
@@ -181,6 +182,11 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-10">
         
+        {/* Onde operar de verdade, quando nao se esta no terminal certo */}
+        <ErrorBoundary fallbackTitle="Terminal de Operação">
+          <EnlaceOperacaoBanner />
+        </ErrorBoundary>
+
         {/* Ligação à API Binance: chaves introduzidas manualmente à entrada */}
         <section
           id="section-binance-api"
