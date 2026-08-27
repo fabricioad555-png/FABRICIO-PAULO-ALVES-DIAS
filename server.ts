@@ -15,7 +15,7 @@ import {
   registarOrdem
 } from "./auditoria.mjs";
 // @ts-ignore - modulo em JavaScript simples, sem tipos
-import { sessaoAtiva, guardarEstado, lerEstado } from "./sessao.mjs";
+import { sessaoAtiva, guardarEstado, lerEstado, apagarEstado } from "./sessao.mjs";
 
 dotenv.config();
 
@@ -125,6 +125,15 @@ app.post("/api/sessao/ler", async (req, res) => {
   }
   const { codigo } = req.body || {};
   const r = await lerEstado(codigo);
+  return res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.post("/api/sessao/apagar", async (req, res) => {
+  if (!sessaoAtiva()) {
+    return res.status(503).json({ ok: false, erro: "Armazenamento de sessao desligado no servidor." });
+  }
+  const { codigo } = req.body || {};
+  const r = await apagarEstado(codigo);
   return res.status(r.ok ? 200 : 400).json(r);
 });
 
@@ -2888,7 +2897,18 @@ app.post("/api/binance/order", async (req, res) => {
 
     const endpoint = isFutures ? "/fapi/v1/order" : "/api/v3/order";
     const timestamp = Date.now();
-    const formattedSymbol = `${symbol.toUpperCase()}USDT`;
+    // O par vinha com "USDT" colado sempre, mesmo quando ja era um par
+    // completo: BTCUSDT virava BTCUSDTUSDT e a Binance recusava com
+    // "Invalid symbol". So acrescenta a moeda de cotacao se ela faltar.
+    const simboloBruto = String(symbol).toUpperCase().trim();
+    const cotacoesConhecidas = ["USDT", "BUSD", "USDC", "FDUSD", "BTC", "ETH", "BNB"];
+    // Tem de sobrar moeda base antes da cotacao. Sem essa condicao, "BTC"
+    // sozinho passaria por par completo por terminar em BTC, e nunca viraria
+    // BTCUSDT.
+    const jaEParCompleto = cotacoesConhecidas.some(
+      (c) => simboloBruto.endsWith(c) && simboloBruto.length > c.length
+    );
+    const formattedSymbol = jaEParCompleto ? simboloBruto : `${simboloBruto}USDT`;
     const formattedSide = side.toUpperCase() === 'LONG' ? 'BUY' : side.toUpperCase() === 'SHORT' ? 'SELL' : side.toUpperCase();
 
     let queryParams = `symbol=${formattedSymbol}&side=${formattedSide}&type=${type}&timestamp=${timestamp}&recvWindow=60000`;

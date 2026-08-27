@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Cloud, CloudOff, RefreshCw, Check, AlertTriangle, LogOut, Lock, Upload, Download
+  Cloud, CloudOff, RefreshCw, Check, AlertTriangle, LogOut, Lock, Upload, Download, Trash2
 } from 'lucide-react';
 import {
   obterCodigo, definirCodigo, esquecerCodigo,
-  carregarDoServidor, guardarNoServidor, iniciarSincronizacao
+  carregarDoServidor, guardarNoServidor, iniciarSincronizacao, apagarDoServidor
 } from '../services/sessaoSyncService';
 
 /**
@@ -90,6 +90,20 @@ export function SessaoSincronizadaSection() {
     }
   };
 
+  const apagar = async () => {
+    if (!confirm('Apagar o estado gravado no servidor? Os outros computadores deixam de encontrar esta sessão. O que está neste navegador continua aqui.')) return;
+    setOcupada(true);
+    const r = await apagarDoServidor(codigo.trim());
+    setOcupada(false);
+    if (r.ok) {
+      esquecerCodigo();
+      setLigada(false);
+      setAviso({ tipo: 'ok', texto: r.apagado ? 'Estado apagado do servidor.' : 'Não havia nada gravado com este código.' });
+    } else {
+      setAviso({ tipo: 'erro', texto: r.erro || 'Falha ao apagar.' });
+    }
+  };
+
   const sair = () => {
     esquecerCodigo();
     setLigada(false);
@@ -153,9 +167,19 @@ export function SessaoSincronizadaSection() {
             <button
               type="button"
               onClick={sair}
-              className="py-2 px-3 rounded-xl text-rose-300 hover:bg-rose-950/40 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              className="py-2 px-3 rounded-xl text-slate-300 hover:bg-slate-800 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              title="Para de sincronizar neste navegador. O que está no servidor continua lá."
             >
               <LogOut className="w-3.5 h-3.5" /> Desligar
+            </button>
+            <button
+              type="button"
+              onClick={apagar}
+              disabled={ocupada}
+              className="py-2 px-3 rounded-xl text-rose-300 hover:bg-rose-950/40 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              title="Remove o estado gravado no servidor"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Apagar
             </button>
           </div>
         )}

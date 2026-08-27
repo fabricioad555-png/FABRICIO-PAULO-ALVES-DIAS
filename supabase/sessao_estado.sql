@@ -35,3 +35,9 @@ create policy "estado_insercao" on public.sessoes_estado
 
 create policy "estado_atualizacao" on public.sessoes_estado
   for update to anon using (true) with check (true);
+
+-- Estado de sessão não é auditoria: quem gravou tem que conseguir apagar.
+-- O apagamento é feito pelo servidor, e só depois de o código de acesso
+-- decifrar o conteúdo, o que prova a posse.
+create policy "estado_remocao" on public.sessoes_estado
+  for delete to anon using (true);

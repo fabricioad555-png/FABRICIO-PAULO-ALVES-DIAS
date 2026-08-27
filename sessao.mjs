@@ -134,3 +134,35 @@ export async function lerEstado(codigo) {
     return { ok: false, erro: erro?.message || String(erro) };
   }
 }
+
+/**
+ * Apaga o estado gravado.
+ *
+ * Exige o codigo correto: primeiro le e decifra, o que prova a posse, e so
+ * entao remove. Sem isso, quem soubesse o hash apagaria estado alheio.
+ */
+export async function apagarEstado(codigo) {
+  if (!sessaoAtiva()) return { ok: false, erro: 'armazenamento de sessao desligado no servidor' };
+  if (!codigoValido(codigo)) return { ok: false, erro: 'codigo de acesso invalido' };
+
+  const atual = await lerEstado(codigo);
+  if (!atual.ok) return atual;
+  if (!atual.existe) return { ok: true, apagado: false };
+
+  try {
+    const resposta = await fetch(`${urlBase()}/rest/v1/${TABELA}?id=eq.${identificador(codigo)}`, {
+      method: 'DELETE',
+      headers: cabecalhos({ Prefer: 'return=minimal' }),
+      signal: AbortSignal.timeout(TEMPO_LIMITE_MS)
+    });
+
+    if (!resposta.ok) {
+      const texto = await resposta.text().catch(() => '');
+      return { ok: false, erro: `HTTP ${resposta.status} ${texto}`.trim() };
+    }
+
+    return { ok: true, apagado: true };
+  } catch (erro) {
+    return { ok: false, erro: erro?.message || String(erro) };
+  }
+}

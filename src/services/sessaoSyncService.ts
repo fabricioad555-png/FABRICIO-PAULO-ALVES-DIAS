@@ -172,3 +172,19 @@ export function iniciarSincronizacao(codigo: string) {
     }
   });
 }
+
+/** Apaga o estado gravado no servidor. Exige o código correto. */
+export async function apagarDoServidor(codigo: string): Promise<{ ok: boolean; erro?: string; apagado?: boolean }> {
+  try {
+    const resposta = await fetch('/api/sessao/apagar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codigo })
+    });
+    const dados = await resposta.json().catch(() => ({}));
+    if (!resposta.ok || !dados.ok) return { ok: false, erro: dados.erro || `HTTP ${resposta.status}` };
+    return { ok: true, apagado: Boolean(dados.apagado) };
+  } catch (erro: any) {
+    return { ok: false, erro: erro?.message || 'falha de rede' };
+  }
+}
