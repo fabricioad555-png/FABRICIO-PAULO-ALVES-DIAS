@@ -19,6 +19,19 @@ import { sessaoAtiva, guardarEstado, lerEstado, apagarEstado } from "./sessao.mj
 
 dotenv.config();
 
+// Uma excecao solta nao pode derrubar o terminal.
+//
+// Aconteceu de verdade: um erro dentro de um catch do assistente virou
+// rejeicao nao tratada e matou o processo no meio da sessao. Num terminal de
+// trading, ficar de pe com uma rota partida e melhor do que morrer inteiro.
+process.on("unhandledRejection", (motivo: any) => {
+  console.error("[servidor] rejeicao nao tratada:", motivo?.stack || motivo);
+});
+
+process.on("uncaughtException", (erro: any) => {
+  console.error("[servidor] excecao nao tratada:", erro?.stack || erro);
+});
+
 const app = express();
 const PORT = 3000;
 
@@ -280,7 +293,19 @@ const generateFallbackForumPostAnalysis = (text: string, sourceName?: string) =>
 };
 
 const generateFallbackChatReply = (messages: any[]) => {
-  const lastMsg = (messages && messages.length > 0 ? messages[messages.length - 1].content : '').toLowerCase();
+  // O painel envia as mensagens no formato { sender, text }, mas isto lia
+  // .content, que nao existe: o valor vinha undefined e o .toLowerCase()
+  // rebentava. Como esta funcao so corre quando a IA ja falhou, e dentro de um
+  // catch, a excecao virava rejeicao nao tratada e derrubava o servidor.
+  const ultima = Array.isArray(messages) && messages.length > 0
+    ? messages[messages.length - 1]
+    : null;
+
+  const texto = ultima
+    ? String(ultima.text ?? ultima.content ?? ultima.message ?? '')
+    : '';
+
+  const lastMsg = texto.toLowerCase();
   
   if (lastMsg.includes('sol') || lastMsg.includes('solana')) {
     return "Para a **Solana ($SOL)**, a análise agregada dos fóruns (Binance Square e TradingView) indica otimismo expressivo (88% de viés comprador). O livro de ordens apresenta suporte em US$ 210,00 e resistência principal na região de US$ 235,00 a US$ 250,00.";
@@ -876,7 +901,14 @@ app.post("/api/forum-chat", async (req, res) => {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.json({ success: true, reply: generateFallbackChatReply(messages) });
+      // Resposta de reserva: a IA nao respondeu e este texto e fixo, com
+      // numeros antigos. Vai marcado para o painel poder dize-lo, em vez de
+      // parecer analise do momento.
+      return res.json({
+        success: true,
+        origem: "reserva",
+        reply: generateFallbackChatReply(messages)
+      });
     }
 
     const ai = getGeminiClient();
@@ -2893,20 +2925,62 @@ async function obterPrecoDeMercado(simbolo: string, isFutures: boolean, isTestne
   }
 }
 
+// Regras de cada par, guardadas por uma hora. Sao estaveis e a consulta e
+// pesada: sao centenas de pares numa resposta so.
+const regrasPorSimbolo = new Map<string, { passo: number; minimoQtd: number; minimoValor: number; validoAte: number }>();
+
 /**
- * Arredonda a quantidade para um numero de casas que a Binance aceite.
+ * Le da Binance o passo de quantidade e os minimos do par.
  *
- * Cada par tem o seu passo minimo. Sem saber qual e, oito casas fazem a
- * corretora recusar por precisao. Poucas casas servem para os pares caros e
- * mantem os baratos utilizaveis.
+ * Sem isto o arredondamento era por regra generica e a corretora recusava com
+ * "Precision is over the maximum defined for this asset": cada par tem o seu
+ * passo, 0.01 no SOLUSDT e 0.001 no BTCUSDT, e nao ha como adivinhar.
  */
-function ajustarCasasDaQuantidade(quantidade: number): string {
-  const q = Number(quantidade);
-  if (!Number.isFinite(q) || q <= 0) return "0";
-  if (q >= 1000) return q.toFixed(0);
-  if (q >= 1) return q.toFixed(2);
-  if (q >= 0.01) return q.toFixed(3);
-  return q.toFixed(5);
+async function obterRegrasDoSimbolo(
+  simbolo: string,
+  isFutures: boolean,
+  isTestnet: boolean
+): Promise<{ passo: number; minimoQtd: number; minimoValor: number } | null> {
+  const cacheKey = `${isFutures ? "f" : "s"}:${isTestnet ? "t" : "p"}:${simbolo}`;
+  const guardado = regrasPorSimbolo.get(cacheKey);
+  if (guardado && guardado.validoAte > Date.now()) return guardado;
+
+  const base = isTestnet
+    ? (isFutures ? "https://testnet.binancefuture.com" : "https://testnet.binance.vision")
+    : (isFutures ? "https://fapi.binance.com" : "https://api.binance.com");
+  const caminho = isFutures ? "/fapi/v1/exchangeInfo" : "/api/v3/exchangeInfo";
+
+  try {
+    const r = await fetch(`${base}${caminho}`, { signal: AbortSignal.timeout(12000) });
+    if (!r.ok) return null;
+
+    const d: any = await r.json();
+    const info = (d?.symbols || []).find((x: any) => x.symbol === simbolo);
+    if (!info) return null;
+
+    const filtros: any = {};
+    for (const f of info.filters || []) filtros[f.filterType] = f;
+
+    const regras = {
+      passo: Number(filtros.LOT_SIZE?.stepSize) || 0,
+      minimoQtd: Number(filtros.LOT_SIZE?.minQty) || 0,
+      minimoValor: Number(filtros.MIN_NOTIONAL?.notional ?? filtros.NOTIONAL?.minNotional) || 0,
+      validoAte: Date.now() + 3600000
+    };
+
+    regrasPorSimbolo.set(cacheKey, regras);
+    return regras;
+  } catch {
+    return null;
+  }
+}
+
+/** Corta a quantidade para o passo do par, sempre para baixo. */
+function ajustarAoPasso(quantidade: number, passo: number): string {
+  if (!(passo > 0)) return String(quantidade);
+  const casas = (String(passo).split(".")[1] || "").replace(/0+$/, "").length;
+  const cortada = Math.floor(quantidade / passo) * passo;
+  return cortada.toFixed(casas);
 }
 
 // Endpoint: Execute Real Order on Binance
@@ -2996,7 +3070,34 @@ app.post("/api/binance/order", async (req, res) => {
       });
     }
 
-    quantidadeFinal = ajustarCasasDaQuantidade(quantidadeFinal);
+    const regras = await obterRegrasDoSimbolo(formattedSymbol, isFutures, isTestnet);
+
+    if (regras) {
+      quantidadeFinal = ajustarAoPasso(Number(quantidadeFinal), regras.passo);
+
+      if (Number(quantidadeFinal) < regras.minimoQtd) {
+        return res.status(400).json({
+          success: false,
+          message:
+            `Quantidade abaixo do minimo do par: ${formattedSymbol} exige pelo menos ` +
+            `${regras.minimoQtd}, e o tamanho pedido da ${quantidadeFinal}. Aumente o valor da ordem.`
+        });
+      }
+
+      if (regras.minimoValor > 0) {
+        const precoAgora = await obterPrecoDeMercado(formattedSymbol, isFutures, isTestnet);
+        const valor = Number(quantidadeFinal) * precoAgora;
+        if (precoAgora > 0 && valor < regras.minimoValor) {
+          return res.status(400).json({
+            success: false,
+            message:
+              `Valor da ordem abaixo do minimo: ${formattedSymbol} exige pelo menos ` +
+              `${regras.minimoValor} USDT por ordem, e esta daria ${valor.toFixed(2)} USDT.`
+          });
+        }
+      }
+    }
+
 
     const formattedSide = side.toUpperCase() === 'LONG' ? 'BUY' : side.toUpperCase() === 'SHORT' ? 'SELL' : side.toUpperCase();
 

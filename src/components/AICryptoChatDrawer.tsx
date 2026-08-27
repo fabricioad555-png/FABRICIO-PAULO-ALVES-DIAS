@@ -85,7 +85,11 @@ export const AICryptoChatDrawer: React.FC<AICryptoChatDrawerProps> = ({
       const botMessage: Message = {
         id: `bot-${Date.now()}`,
         sender: 'assistant',
-        text: data.reply,
+        text: data.origem === 'reserva'
+          ? `${data.reply}
+
+_Resposta de reserva: a análise por IA não respondeu agora, e este texto é fixo, com números que podem estar desatualizados._`
+          : data.reply,
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
       };
 
