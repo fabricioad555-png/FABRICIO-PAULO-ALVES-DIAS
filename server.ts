@@ -2468,12 +2468,16 @@ app.get("/api/binance/ping", async (req, res) => {
     });
   } catch (err: any) {
     const latency = Date.now() - startTime;
-    return res.json({
-      success: true,
-      status: "ONLINE",
-      pingMs: Math.max(18, latency),
+    // Nao alcancar a Binance e o oposto de estar ONLINE. Antes esta resposta
+    // dizia ONLINE mesmo com a rede caida, o que esconde a queda justamente
+    // quando ela importa.
+    return res.status(503).json({
+      success: false,
+      status: "OFFLINE",
+      pingMs: latency,
       cluster: "api.binance.com",
       region: "Portugal / Europe (PT)",
+      mensagem: `Nao foi possivel alcancar a Binance: ${err?.message || err}`,
       timestamp: Date.now()
     });
   }
@@ -2866,10 +2870,49 @@ app.post("/api/binance/test-connection", async (req, res) => {
   }
 });
 
+/**
+ * Preco de mercado do par, pelo endpoint publico da Binance.
+ * Devolve 0 quando nao consegue, para quem chama decidir o que fazer.
+ */
+async function obterPrecoDeMercado(simbolo: string, isFutures: boolean, isTestnet: boolean): Promise<number> {
+  const base = isTestnet
+    ? (isFutures ? "https://testnet.binancefuture.com" : "https://testnet.binance.vision")
+    : (isFutures ? "https://fapi.binance.com" : "https://api.binance.com");
+  const caminho = isFutures ? "/fapi/v1/ticker/price" : "/api/v3/ticker/price";
+
+  try {
+    const r = await fetch(`${base}${caminho}?symbol=${simbolo}`, {
+      signal: AbortSignal.timeout(6000)
+    });
+    if (!r.ok) return 0;
+    const d: any = await r.json();
+    const p = Number(d?.price);
+    return Number.isFinite(p) && p > 0 ? p : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Arredonda a quantidade para um numero de casas que a Binance aceite.
+ *
+ * Cada par tem o seu passo minimo. Sem saber qual e, oito casas fazem a
+ * corretora recusar por precisao. Poucas casas servem para os pares caros e
+ * mantem os baratos utilizaveis.
+ */
+function ajustarCasasDaQuantidade(quantidade: number): string {
+  const q = Number(quantidade);
+  if (!Number.isFinite(q) || q <= 0) return "0";
+  if (q >= 1000) return q.toFixed(0);
+  if (q >= 1) return q.toFixed(2);
+  if (q >= 0.01) return q.toFixed(3);
+  return q.toFixed(5);
+}
+
 // Endpoint: Execute Real Order on Binance
 app.post("/api/binance/order", async (req, res) => {
   try {
-    const { apiKey, apiSecret, environment = 'binance_pt', accountType = 'SPOT', symbol, side, type = 'MARKET', quantity, proxyUrl, serverCluster } = req.body;
+    const { apiKey, apiSecret, environment = 'binance_pt', accountType = 'SPOT', symbol, side, type = 'MARKET', quantity, sizeUsd, precoReferencia, proxyUrl, serverCluster } = req.body;
 
     if (!apiKey || !apiSecret || !symbol || !side) {
       return res.status(400).json({
@@ -2909,11 +2952,57 @@ app.post("/api/binance/order", async (req, res) => {
       (c) => simboloBruto.endsWith(c) && simboloBruto.length > c.length
     );
     const formattedSymbol = jaEParCompleto ? simboloBruto : `${simboloBruto}USDT`;
+
+    // A quantidade e recalculada aqui com o preco real de mercado.
+    //
+    // O preco que vem do navegador pode ter sido inventado: quando nao ha
+    // cotacao, o codigo do painel cai num valor fixo de 100 dolares. Como a
+    // quantidade e tamanho dividido pelo preco, um BTC a 100 em vez de 78 mil
+    // gera uma ordem centenas de vezes maior do que a pretendida.
+    let quantidadeFinal = quantity;
+
+    if (Number(sizeUsd) > 0) {
+      const precoMercado = await obterPrecoDeMercado(formattedSymbol, isFutures, isTestnet);
+
+      if (precoMercado > 0) {
+        quantidadeFinal = Number(sizeUsd) / precoMercado;
+
+        // Se o preco do painel destoa demais do real, a ordem nao e o que a
+        // pessoa pensa que e. Melhor recusar do que executar por engano.
+        const ref = Number(precoReferencia);
+        if (ref > 0) {
+          const desvio = Math.abs(ref - precoMercado) / precoMercado;
+          if (desvio > 0.2) {
+            return res.status(400).json({
+              success: false,
+              message:
+                `Ordem recusada por seguranca: o preco usado no painel (${ref}) esta ${(desvio * 100).toFixed(0)}% ` +
+                `longe do preco real de ${formattedSymbol} (${precoMercado}). Atualize as cotacoes e tente de novo.`
+            });
+          }
+        }
+      } else if (!(Number(quantity) > 0)) {
+        return res.status(502).json({
+          success: false,
+          message: `Nao foi possivel obter o preco de ${formattedSymbol} para calcular a quantidade. Nenhuma ordem foi enviada.`
+        });
+      }
+    }
+
+    if (!(Number(quantidadeFinal) > 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantidade invalida: nenhuma ordem foi enviada."
+      });
+    }
+
+    quantidadeFinal = ajustarCasasDaQuantidade(quantidadeFinal);
+
     const formattedSide = side.toUpperCase() === 'LONG' ? 'BUY' : side.toUpperCase() === 'SHORT' ? 'SELL' : side.toUpperCase();
 
     let queryParams = `symbol=${formattedSymbol}&side=${formattedSide}&type=${type}&timestamp=${timestamp}&recvWindow=60000`;
     if (quantity) {
-      queryParams += `&quantity=${quantity}`;
+      queryParams += `&quantity=${quantidadeFinal}`;
     }
 
     const signature = signBinanceQuery(queryParams, apiSecret);

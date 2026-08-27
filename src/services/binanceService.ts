@@ -234,7 +234,11 @@ export async function dispatchClientSideBinanceOrder(params: {
     symbol: simbolo,
     side: params.side.toUpperCase(),
     type: params.type.toUpperCase(),
-    quantity: quantidade
+    quantity: quantidade,
+    // O servidor recalcula a quantidade com o preco real. Estes dois campos
+    // deixam-no fazer isso e detetar quando o preco daqui esta errado.
+    sizeUsd: params.sizeUsd,
+    precoReferencia: params.priceUsd
   });
 
   if (!resposta?.success) {
