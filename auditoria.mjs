@@ -137,7 +137,7 @@ export function registarOrdem({
   });
 }
 
-export function registarEvento({ categoria, nivel, titulo, detalhe, dados }) {
+export function registarEvento({ categoria, nivel, titulo, detalhe, dados } = {}) {
   const niveisValidos = ['info', 'alerta', 'erro'];
   return inserir('eventos_auditoria', {
     categoria: categoria || 'geral',

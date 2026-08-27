@@ -12,7 +12,8 @@ import {
   mascararChave,
   registarChamada,
   registarLigacao,
-  registarOrdem
+  registarOrdem,
+  registarEvento
 } from "./auditoria.mjs";
 // @ts-ignore - modulo em JavaScript simples, sem tipos
 import { sessaoAtiva, guardarEstado, lerEstado, apagarEstado } from "./sessao.mjs";
@@ -26,10 +27,22 @@ dotenv.config();
 // trading, ficar de pe com uma rota partida e melhor do que morrer inteiro.
 process.on("unhandledRejection", (motivo: any) => {
   console.error("[servidor] rejeicao nao tratada:", motivo?.stack || motivo);
+  registarEvento({
+    categoria: "servidor",
+    nivel: "erro",
+    titulo: "Rejeicao nao tratada",
+    detalhe: String(motivo?.message || motivo).slice(0, 500)
+  });
 });
 
 process.on("uncaughtException", (erro: any) => {
   console.error("[servidor] excecao nao tratada:", erro?.stack || erro);
+  registarEvento({
+    categoria: "servidor",
+    nivel: "erro",
+    titulo: "Excecao nao tratada",
+    detalhe: String(erro?.message || erro).slice(0, 500)
+  });
 });
 
 const app = express();
@@ -74,6 +87,18 @@ async function registarChamadaDaRota(req: any, res: any, resposta: any, duracaoM
       mensagem: resposta?.message,
       pingMs: resposta?.pingMs,
       saldoUsdt: resposta?.accountBalanceUsdt
+    }));
+  }
+
+  // Toda resposta de falha fica registada, nao so as rotas de dinheiro.
+  // Sem isto, um erro numa rota de analise passava despercebido.
+  if (res.statusCode >= 400) {
+    tarefas.push(registarEvento({
+      categoria: "rota",
+      nivel: res.statusCode >= 500 ? "erro" : "alerta",
+      titulo: `${req.method} ${rota} respondeu ${res.statusCode}`,
+      detalhe: String(resposta?.message || resposta?.erro || resposta?.error || "").slice(0, 500),
+      dados: { rota, status: res.statusCode, duracaoMs }
     }));
   }
 
@@ -148,6 +173,20 @@ app.post("/api/sessao/apagar", async (req, res) => {
   const { codigo } = req.body || {};
   const r = await apagarEstado(codigo);
   return res.status(r.ok ? 200 : 400).json(r);
+});
+
+// O painel reporta aqui os erros que acontecem no navegador. Sem isto, metade
+// das falhas ficava invisivel: so as do servidor eram registadas.
+app.post("/api/auditoria/evento", async (req, res) => {
+  const { categoria, nivel, titulo, detalhe, dados } = req.body || {};
+  await registarEvento({
+    categoria: categoria || "navegador",
+    nivel: nivel || "erro",
+    titulo: String(titulo || "Erro no navegador").slice(0, 200),
+    detalhe: String(detalhe || "").slice(0, 500),
+    dados
+  });
+  return res.status(201).json({ registado: true });
 });
 
 app.get("/api/auditoria", async (req, res) => {
@@ -3047,12 +3086,17 @@ app.post("/api/binance/order", async (req, res) => {
         if (ref > 0) {
           const desvio = Math.abs(ref - precoMercado) / precoMercado;
           if (desvio > 0.2) {
-            return res.status(400).json({
-              success: false,
-              message:
-                `Ordem recusada por seguranca: o preco usado no painel (${ref}) esta ${(desvio * 100).toFixed(0)}% ` +
-                `longe do preco real de ${formattedSymbol} (${precoMercado}). Atualize as cotacoes e tente de novo.`
+            const aviso =
+              `Ordem recusada por seguranca: o preco usado no painel (${ref}) esta ${(desvio * 100).toFixed(0)}% ` +
+              `longe do preco real de ${formattedSymbol} (${precoMercado}). Atualize as cotacoes e tente de novo.`;
+            registarEvento({
+              categoria: "ordem",
+              nivel: "alerta",
+              titulo: "Ordem barrada por preco desatualizado",
+              detalhe: aviso,
+              dados: { simbolo: formattedSymbol, precoPainel: ref, precoReal: precoMercado }
             });
+            return res.status(400).json({ success: false, message: aviso });
           }
         }
       } else if (!(Number(quantity) > 0)) {
@@ -3173,6 +3217,18 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    // Caminho de API que nao existe tem de responder 404 em JSON.
+    //
+    // Sem isto o catch-all abaixo servia a pagina, e quem chamava a API
+    // recebia HTML: foi assim que o painel da auditoria quebrou com
+    // "Unexpected token '<'" em vez de dizer que a rota nao existia.
+    app.all("/api/*", (req, res) => {
+      res.status(404).json({
+        success: false,
+        erro: `Rota nao encontrada: ${req.method} ${req.path}`
+      });
+    });
+
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {

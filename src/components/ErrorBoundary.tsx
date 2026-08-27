@@ -1,3 +1,4 @@
+import { relatarErro } from '../services/relatorErrosService';
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
@@ -25,6 +26,11 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    relatarErro(
+      `Componente quebrou: ${this.props.fallbackTitle || 'sem nome'}`,
+      (error as any)?.stack || String(error),
+      { componente: this.props.fallbackTitle }
+    );
     console.error('ErrorBoundary capturou um erro:', error, errorInfo);
   }
 
